@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, session, shell } from 'electron'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { AppStore } from './store'
 import { loadSettings } from './settings'
@@ -16,6 +17,9 @@ async function createWindow(): Promise<void> {
   const settings = await loadSettings()
   store = new AppStore(settings)
 
+  const preloadMjs = join(__dirname, '../preload/index.mjs')
+  const preloadJs = join(__dirname, '../preload/index.js')
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -28,7 +32,7 @@ async function createWindow(): Promise<void> {
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: existsSync(preloadMjs) ? preloadMjs : preloadJs,
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false
@@ -88,6 +92,7 @@ function bindIpc(): void {
 }
 
 app.whenReady().then(async () => {
+  await session.defaultSession.setProxy({ mode: 'system' })
   bindIpc()
   await createWindow()
   app.on('activate', () => {

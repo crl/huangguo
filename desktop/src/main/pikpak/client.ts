@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { net } from 'electron'
 import { isFolder, isVideo, type ShareItem } from '../../shared/types'
 import { sanitizeFileName } from '../../shared/format'
 import {
@@ -80,6 +81,27 @@ function asInt64(value: string | number | undefined): number {
   return 0
 }
 
+const HOSTS = [
+  { drive: 'api-drive.mypikpak.net', user: 'user.mypikpak.net' },
+  { drive: 'api-drive.mypikpak.com', user: 'user.mypikpak.com' }
+]
+
+function isRegionBlocked(response: ShareAPIResponse): boolean {
+  const status = (response.share_status ?? '').toUpperCase()
+  const text = (response.share_status_text ?? '').toLowerCase()
+  return (
+    status.includes('REGION') ||
+    text.includes('current region') ||
+    text.includes('not available in the current region')
+  )
+}
+
+function regionError(): PikPakError {
+  return new PikPakError(
+    '当前网络所在地区打不开这个 PikPak 分享（不是电脑没网）。换一个能访问 PikPak 国际节点的网络后再试。'
+  )
+}
+
 function asItem(file: ShareFileDTO): ShareItem | null {
   if (!file.id || !file.name) return null
   return {
@@ -123,8 +145,8 @@ export class PikPakShareClient {
   private captchaToken = ''
   private passCodeToken = ''
   private shareId = ''
-  private driveHost = 'api-drive.mypikpak.com'
-  private userHost = 'user.mypikpak.com'
+  private driveHost = 'api-drive.mypikpak.net'
+  private userHost = 'user.mypikpak.net'
   userAgent = ''
   private deviceIDs: Record<string, string>
 
@@ -139,39 +161,68 @@ export class PikPakShareClient {
 
   async openShare(shareId: string, password: string, preferredParentId: string): Promise<OpenedShare> {
     this.shareId = shareId
-    this.passCodeToken = ''
-    this.captchaToken = ''
     this.deviceID = this.persistentDeviceID(shareId)
-    await this.bootstrapCaptcha()
-    const info = await this.getShareInfo(password)
-    if (info.pass_code_token) {
-      this.passCodeToken = info.pass_code_token
-    }
 
-    const shareTitle = info.title?.trim()
-    const roots = info.files ?? []
+    let lastError: Error = new PikPakError('无法打开分享')
+    for (const host of HOSTS) {
+      this.driveHost = host.drive
+      this.userHost = host.user
+      for (const profile of allProfiles) {
+        this.applyProfile(profile)
+        this.captchaToken = ''
+        this.passCodeToken = ''
+        try {
+          await this.refreshCaptcha('GET:/drive/v1/share')
+          const info = await this.getShareInfo(password)
+          if (isRegionBlocked(info)) {
+            lastError = regionError()
+            continue
+          }
+          const status = info.share_status
+          if (status && status !== 'OK' && status !== 'PASS_CODE_EMPTY' && status !== 'PASS_CODE_ERROR') {
+            lastError = new PikPakError(info.share_status_text ?? status)
+            continue
+          }
+          if (info.pass_code_token) {
+            this.passCodeToken = info.pass_code_token
+          }
 
-    if (preferredParentId && (await this.isValidFolder(preferredParentId))) {
-      return {
-        shareId,
-        startParentId: preferredParentId,
-        title: shareTitle || '分享'
+          const shareTitle = info.title?.trim()
+          const roots = info.files ?? []
+          let opened: OpenedShare
+
+          if (preferredParentId && (await this.isValidFolder(preferredParentId))) {
+            opened = {
+              shareId,
+              startParentId: preferredParentId,
+              title: shareTitle || '分享'
+            }
+          } else if (roots.length === 1 && roots[0]?.kind === 'drive#folder' && roots[0].id) {
+            opened = {
+              shareId,
+              startParentId: roots[0].id,
+              title: roots[0].name || shareTitle || '分享'
+            }
+          } else {
+            opened = {
+              shareId,
+              startParentId: '',
+              title: shareTitle || '分享'
+            }
+          }
+
+          const probe = await this.getShareDetail(opened.startParentId, '')
+          if (isRegionBlocked(probe)) {
+            lastError = regionError()
+            continue
+          }
+          return opened
+        } catch (error) {
+          lastError = error instanceof Error ? error : new PikPakError(String(error))
+        }
       }
     }
-
-    if (roots.length === 1 && roots[0]?.kind === 'drive#folder' && roots[0].id) {
-      return {
-        shareId,
-        startParentId: roots[0].id,
-        title: roots[0].name || shareTitle || '分享'
-      }
-    }
-
-    return {
-      shareId,
-      startParentId: '',
-      title: shareTitle || '分享'
-    }
+    throw lastError
   }
 
   async list(parentId: string): Promise<ShareItem[]> {
@@ -189,7 +240,7 @@ export class PikPakShareClient {
           }
           continue
         }
-        throw new PikPakError(response.share_status_text ?? status)
+        throw isRegionBlocked(response) ? regionError() : new PikPakError(response.share_status_text ?? status)
       }
       for (const file of response.files ?? []) {
         const item = asItem(file)
@@ -252,28 +303,6 @@ export class PikPakShareClient {
       }
       return false
     }
-  }
-
-  private async bootstrapCaptcha(): Promise<void> {
-    let lastError: unknown
-    const hosts = [
-      { drive: 'api-drive.mypikpak.com', user: 'user.mypikpak.com' },
-      { drive: 'api-drive.mypikpak.net', user: 'user.mypikpak.net' }
-    ]
-    for (const hostPair of hosts) {
-      this.driveHost = hostPair.drive
-      this.userHost = hostPair.user
-      for (const next of allProfiles) {
-        this.applyProfile(next)
-        try {
-          await this.refreshCaptcha('GET:/drive/v1/share')
-          return
-        } catch (error) {
-          lastError = error
-        }
-      }
-    }
-    throw lastError instanceof Error ? lastError : new PikPakError('验证初始化失败：无法初始化')
   }
 
   private applyProfile(profile: PikPakClientProfile): void {
@@ -398,7 +427,7 @@ export class PikPakShareClient {
       try {
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), 30_000)
-        const response = await fetch(url, { ...init, signal: controller.signal })
+        const response = await net.fetch(url, { ...init, signal: controller.signal })
         clearTimeout(timer)
         if (response.status === 429 || (response.status >= 500 && response.status <= 599)) {
           lastError = new PikPakError(`HTTP ${response.status}`)

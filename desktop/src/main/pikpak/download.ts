@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { net } from 'electron'
 import { createWriteStream } from 'node:fs'
 import { open, stat, mkdir, rm, type FileHandle } from 'node:fs/promises'
-import http from 'node:http'
-import https from 'node:https'
 import path from 'node:path'
 import { Transform, type Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -138,103 +137,110 @@ async function transfer(
         finish(new PikPakError('已取消'))
         return
       }
-      const lib = current.protocol === 'https:' ? https : http
       const rangeHeader = startedAt > 0 ? `bytes=${startedAt}-` : undefined
-      const headers: Record<string, string> = {
-        'User-Agent': userAgent,
-        Referer: 'https://mypikpak.com/'
-      }
-      if (rangeHeader) headers.Range = rangeHeader
-
-      const req = lib.request(
-        current,
-        {
-          method: 'GET',
-          headers,
-          timeout: 120_000
-        },
-        (res) => {
-          const status = res.statusCode ?? 0
-          if ([301, 302, 303, 307, 308].includes(status) && res.headers.location) {
-            res.resume()
-            if (remaining <= 0) {
-              finish(new PikPakError('重定向过多'))
-              return
-            }
-            visit(new URL(res.headers.location, current), remaining - 1)
-            return
-          }
-          if (status < 200 || status > 206) {
-            res.resume()
-            finish(new PikPakError(httpErrorMessage(status)))
-            return
-          }
-
-          const remoteSize = Number(res.headers['content-length'] ?? 0)
-          const openAndPipe = async (): Promise<void> => {
-            if (status === 206) {
-              try {
-                await stat(destination)
-              } catch {
-                await mkdir(path.dirname(destination), { recursive: true })
-                await (await open(destination, 'w')).close()
-              }
-            } else if (startedAt > 0) {
-              const isFullFile = remoteSize > startedAt && (expectedSize <= 0 || remoteSize >= expectedSize)
-              if (!isFullFile) {
-                res.resume()
-                throw new PikPakError(httpErrorMessage(416))
-              }
-              await rm(destination, { force: true })
-              startedAt = 0
-              received = 0
-            } else {
-              await rm(destination, { force: true })
-              startedAt = 0
-              received = 0
-            }
-
-            const flags = status === 206 ? 'a' : 'w'
-            const stream = createWriteStream(destination, { flags })
-            const expected =
-              status === 206 ? startedAt + Math.max(0, remoteSize) : Math.max(expectedSize, remoteSize)
-            onProgress(received, expected)
-
-            const counter = new Transform({
-              transform(chunk, _encoding, callback) {
-                received += chunk.length
-                onProgress(received, expected)
-                callback(null, chunk)
-              }
-            })
-
-            const abort = (): void => {
-              req.destroy()
-              stream.destroy()
-            }
-            signal.addEventListener('abort', abort, { once: true })
-            try {
-              await pipeline(res as unknown as Readable, counter, stream)
-              finish()
-            } catch (error) {
-              finish(signal.aborted ? new PikPakError('已取消') : (error as Error))
-            } finally {
-              signal.removeEventListener('abort', abort)
-            }
-          }
-
-          openAndPipe().catch((error) => finish(error instanceof Error ? error : new Error(String(error))))
-        }
-      )
-
-      req.on('timeout', () => {
-        req.destroy(new PikPakError('下载超时'))
+      const req = net.request({
+        method: 'GET',
+        url: current.toString(),
+        redirect: 'manual'
       })
-      req.on('error', (error) => finish(error))
+      req.setHeader('User-Agent', userAgent)
+      req.setHeader('Referer', 'https://mypikpak.com/')
+      if (rangeHeader) req.setHeader('Range', rangeHeader)
+
+      let redirecting = false
+      req.on('redirect', (_status, _method, redirectUrl) => {
+        redirecting = true
+        req.abort()
+        if (remaining <= 0) {
+          finish(new PikPakError('重定向过多'))
+          return
+        }
+        visit(new URL(redirectUrl, current), remaining - 1)
+      })
+
+      req.on('response', (res) => {
+        const status = res.statusCode ?? 0
+        if ([301, 302, 303, 307, 308].includes(status) && res.headers.location) {
+          const location = Array.isArray(res.headers.location) ? res.headers.location[0] : res.headers.location
+          res.resume()
+          if (remaining <= 0 || !location) {
+            finish(new PikPakError('重定向过多'))
+            return
+          }
+          visit(new URL(location, current), remaining - 1)
+          return
+        }
+        if (status < 200 || status > 206) {
+          res.resume()
+          finish(new PikPakError(httpErrorMessage(status)))
+          return
+        }
+
+        const lengthHeader = res.headers['content-length']
+        const remoteSize = Number(Array.isArray(lengthHeader) ? lengthHeader[0] : lengthHeader ?? 0)
+        const openAndPipe = async (): Promise<void> => {
+          if (status === 206) {
+            try {
+              await stat(destination)
+            } catch {
+              await mkdir(path.dirname(destination), { recursive: true })
+              await (await open(destination, 'w')).close()
+            }
+          } else if (startedAt > 0) {
+            const isFullFile = remoteSize > startedAt && (expectedSize <= 0 || remoteSize >= expectedSize)
+            if (!isFullFile) {
+              res.resume()
+              throw new PikPakError(httpErrorMessage(416))
+            }
+            await rm(destination, { force: true })
+            startedAt = 0
+            received = 0
+          } else {
+            await rm(destination, { force: true })
+            startedAt = 0
+            received = 0
+          }
+
+          const flags = status === 206 ? 'a' : 'w'
+          const stream = createWriteStream(destination, { flags })
+          const expected =
+            status === 206 ? startedAt + Math.max(0, remoteSize) : Math.max(expectedSize, remoteSize)
+          onProgress(received, expected)
+
+          const counter = new Transform({
+            transform(chunk, _encoding, callback) {
+              received += chunk.length
+              onProgress(received, expected)
+              callback(null, chunk)
+            }
+          })
+
+          const abort = (): void => {
+            req.abort()
+            stream.destroy()
+          }
+          signal.addEventListener('abort', abort, { once: true })
+          try {
+            await pipeline(res as unknown as Readable, counter, stream)
+            finish()
+          } catch (error) {
+            finish(signal.aborted ? new PikPakError('已取消') : (error as Error))
+          } finally {
+            signal.removeEventListener('abort', abort)
+          }
+        }
+
+        openAndPipe().catch((error) => finish(error instanceof Error ? error : new Error(String(error))))
+      })
+
+      req.on('error', (error) => {
+        if (redirecting) return
+        finish(error)
+      })
       signal.addEventListener(
         'abort',
         () => {
-          req.destroy()
+          req.abort()
           finish(new PikPakError('已取消'))
         },
         { once: true }
