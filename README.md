@@ -1,23 +1,33 @@
 # 黄果下载
 
-macOS 原生的 [PikPak](https://mypikpak.com) 分享下载器。粘贴 `mypikpak.com/s/…` 链接，浏览目录、勾选文件或文件夹，批量下到本地。
+macOS 原生，以及 Windows 可用的 Electron 版 [PikPak](https://mypikpak.com) 分享下载器。粘贴 `mypikpak.com/s/…` 链接，浏览目录、勾选文件或文件夹，批量下到本地。
 
 ## 功能
 
 - 打开公开分享链接，支持提取码
 - 面包屑导航、当前目录搜索
 - 勾选文件 / 全选 / 只勾选视频；选中文件夹会递归扫描其中的视频
-- 按分享目录结构落盘，默认保存到 `~/Movies/PikPak`
+- 按分享目录结构落盘。macOS 默认 `~/Movies/PikPak`，Windows 默认 `%USERPROFILE%\Videos\PikPak`
 - 最多 2 路并发下载，失败可重试
 - 「优先转码」：更稳，清晰度可能更低
 - 用系统播放器打开已完成的文件
 
-## 环境
+## Windows（Electron）
+
+需要 Node.js 20 或更高版本。
+
+```bash
+cd desktop
+npm install
+npm run dev
+```
+
+源码在 `desktop/`。界面和下载逻辑与 macOS 版对应。
+
+## macOS
 
 - macOS 14 或更高版本
 - Xcode 15 或更高版本
-
-## 构建
 
 ```bash
 git clone https://github.com/crl/huangguo.git
@@ -45,15 +55,17 @@ xcodebuild -scheme Huangguo -configuration Debug
 ## 结构
 
 ```
-Huangguo/
-├── HuangguoApp.swift          # 入口
-├── AppStore.swift             # 分享浏览与勾选状态
-├── Models/                    # 分享条目、下载任务
+Huangguo/                      # macOS SwiftUI
+├── HuangguoApp.swift
+├── AppStore.swift
+├── Models/
 ├── Services/
-│   ├── PikPakShareClient.swift
-│   ├── PikPakConfig.swift
-│   └── DownloadManager.swift
-└── Views/                     # 顶栏、目录、下载队列
+└── Views/
+desktop/                       # Windows Electron + React
+├── src/main/                  # PikPak 客户端与下载
+├── src/preload/
+├── src/renderer/              # 顶栏、目录、下载队列
+└── src/shared/
 ```
 
 ## 说明

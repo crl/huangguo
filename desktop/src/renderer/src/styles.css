@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+:root {
+  --canvas: #fff1f3;
+  --panel: #fff8f9;
+  --field: #ffffff;
+  --ink: #3b2430;
+  --muted: #8a6b76;
+  --hairline: rgb(59 36 48 / 0.08);
+  --header-top: #ffc7d6;
+  --header-mid: #ffe6eb;
+  --header-bottom: #fff2f5;
+  --queue: rgb(255 219 227 / 0.55);
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #291a21;
+    --panel: #332129;
+    --field: #38292e;
+    --ink: #fbe8ee;
+    --muted: #c9a8b3;
+    --hairline: rgb(255 255 255 / 0.08);
+    --header-top: #4a2836;
+    --header-mid: #3a1f2a;
+    --header-bottom: #291a21;
+    --queue: rgb(74 40 54 / 0.7);
+  }
+}
+
+@theme inline {
+  --color-rose: #ff789e;
+  --color-rose-deep: #db527a;
+  --color-blush: #ffdbe3;
+  --color-peach: #ffb89e;
+  --color-folder: #ffb275;
+  --color-file: #d1adbd;
+  --color-success: #5cb38f;
+  --color-warning: #ed9e5c;
+  --color-danger: #eb5c7a;
+  --color-canvas: var(--canvas);
+  --color-panel: var(--panel);
+  --color-field: var(--field);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-hairline: var(--hairline);
+  --font-sans: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", ui-rounded, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+button,
+input {
+  font-family: inherit;
+}
+
+.drag-region {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.rose-gradient {
+  background-image: linear-gradient(180deg, #ff9eb8 0%, #f5618f 100%);
+}
+
+.header-wash {
+  background-image: linear-gradient(
+    180deg,
+    var(--header-top) 0%,
+    var(--header-mid) 55%,
+    var(--header-bottom) 100%
+  );
+}
