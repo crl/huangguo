@@ -6,6 +6,7 @@ import path from 'node:path'
 import { formatBytes, sanitizeFileName } from '../../shared/format'
 import {
   statusCanPlay,
+  VIDEO_EXTENSIONS,
   type DownloadItemDTO,
   type DownloadStatus
 } from '../../shared/types'
@@ -67,43 +68,6 @@ async function declaredEnd(filePath: string): Promise<number | null> {
   }
 }
 
-async function hasMoovAtom(filePath: string): Promise<boolean> {
-  let handle: FileHandle | undefined
-  try {
-    handle = await open(filePath, 'r')
-    const size = (await handle.stat()).size
-    if (size < 8) return false
-    const header = Buffer.alloc(16)
-    let offset = 0
-    for (let i = 0; i < 48; i += 1) {
-      if (offset + 8 > size) break
-      const { bytesRead } = await handle.read(header, 0, 8, offset)
-      if (bytesRead < 8) break
-      const boxSize = header.readUInt32BE(0)
-      const type = header.subarray(4, 8).toString('ascii')
-      if (type === 'moov') return true
-      let real = boxSize
-      if (boxSize === 1) {
-        const large = await handle.read(header, 0, 8, offset + 8)
-        if (large.bytesRead < 8) break
-        real = Number(header.readBigUInt64BE(0))
-      } else if (boxSize === 0) {
-        real = size - offset
-      }
-      if (real < 8) break
-      offset += real
-    }
-    const tailLen = Math.min(size, 8 * 1024 * 1024)
-    const tail = Buffer.alloc(tailLen)
-    const { bytesRead } = await handle.read(tail, 0, tailLen, Math.max(0, size - tailLen))
-    return tail.subarray(0, bytesRead).includes(Buffer.from('moov'))
-  } catch {
-    return false
-  } finally {
-    await handle?.close()
-  }
-}
-
 export async function isComplete(filePath: string, expectedSize: number): Promise<boolean> {
   const size = await fileSize(filePath)
   if (size <= 0) return false
@@ -113,10 +77,16 @@ export async function isComplete(filePath: string, expectedSize: number): Promis
   return true
 }
 
+function isVideoPath(filePath: string): boolean {
+  return VIDEO_EXTENSIONS.has(path.extname(filePath).slice(1).toLowerCase())
+}
+
 export async function isPlayable(filePath: string): Promise<boolean> {
+  if (!isVideoPath(filePath)) return false
   const size = await fileSize(filePath)
   if (size < 64 * 1024) return false
-  return hasMoovAtom(filePath)
+  if ((await declaredEnd(filePath)) != null) return true
+  return size >= 1024 * 1024
 }
 
 class Gate {
@@ -143,6 +113,16 @@ function httpErrorMessage(code: number): string {
   return `HTTP ${code}`
 }
 
+function requestHeaders(userAgent: string, range?: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'User-Agent': userAgent,
+    Referer: 'https://mypikpak.com/',
+    Accept: '*/*'
+  }
+  if (range) headers.Range = range
+  return headers
+}
+
 function writeChunk(stream: WriteStream, chunk: Buffer): Promise<void> {
   return new Promise((resolve, reject) => {
     const ok = stream.write(chunk, (error) => {
@@ -153,14 +133,46 @@ function writeChunk(stream: WriteStream, chunk: Buffer): Promise<void> {
   })
 }
 
+async function pumpBody(
+  response: Awaited<ReturnType<typeof net.fetch>>,
+  write: (chunk: Buffer) => Promise<void>,
+  signal: AbortSignal,
+  controller: AbortController,
+  bumpStall: () => void,
+  onBytes: (n: number) => void
+): Promise<void> {
+  if (!response.body) throw new PikPakError('没有下载数据')
+  const reader = response.body.getReader()
+  const cancelRead = (): void => {
+    void reader.cancel().catch(() => undefined)
+  }
+  signal.addEventListener('abort', cancelRead)
+  controller.signal.addEventListener('abort', cancelRead)
+  try {
+    while (true) {
+      if (signal.aborted) throw new PikPakError('已取消')
+      if (controller.signal.aborted) throw new PikPakError('下载中断，已保留进度')
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value || value.byteLength === 0) continue
+      bumpStall()
+      const chunk = Buffer.from(value)
+      await write(chunk)
+      onBytes(chunk.byteLength)
+    }
+  } finally {
+    signal.removeEventListener('abort', cancelRead)
+    controller.signal.removeEventListener('abort', cancelRead)
+  }
+}
+
 async function transfer(
   remote: string,
   destination: string,
   expectedSize: number,
   userAgent: string,
   signal: AbortSignal,
-  onProgress: (written: number, expected: number) => void,
-  allowRange = true
+  onProgress: (written: number, expected: number) => void
 ): Promise<void> {
   await mkdir(path.dirname(destination), { recursive: true })
   const existing = await fileSize(destination)
@@ -169,18 +181,8 @@ async function transfer(
     return
   }
 
-  let startedAt = allowRange ? existing : 0
-  if (!allowRange && existing > 0) {
-    await rm(destination, { force: true })
-  }
-  let received = startedAt
-  const headers: Record<string, string> = {
-    'User-Agent': userAgent,
-    Referer: 'https://mypikpak.com/',
-    Accept: '*/*'
-  }
-  if (startedAt > 0) headers.Range = `bytes=${startedAt}-`
-
+  let startedAt = existing
+  let received = existing
   const controller = new AbortController()
   const abort = (): void => controller.abort()
   signal.addEventListener('abort', abort)
@@ -191,34 +193,18 @@ async function transfer(
   }
   bumpStall()
 
-  const restartWithoutRange = async (): Promise<void> => {
-    if (stallTimer) clearTimeout(stallTimer)
-    signal.removeEventListener('abort', abort)
-    await rm(destination, { force: true })
-    await transfer(remote, destination, expectedSize, userAgent, signal, onProgress, false)
-  }
-
   try {
     const response = await net.fetch(remote, {
       method: 'GET',
-      headers,
+      headers: requestHeaders(userAgent, startedAt > 0 ? `bytes=${startedAt}-` : undefined),
       redirect: 'follow',
       signal: controller.signal
     })
     const status = response.status
     const remoteSize = Number(response.headers.get('content-length') ?? 0)
-    const fullInsteadOfRange =
-      startedAt > 0 && status === 200 && remoteSize > startedAt && (expectedSize <= 0 || remoteSize >= expectedSize)
 
-    if (status === 416 || (startedAt > 0 && status !== 206 && !fullInsteadOfRange)) {
-      await response.body?.cancel().catch(() => undefined)
-      if (allowRange) {
-        await restartWithoutRange()
-        return
-      }
-      throw new PikPakError(httpErrorMessage(status === 200 ? 416 : status))
-    }
     if (status < 200 || status > 206) {
+      await response.body?.cancel().catch(() => undefined)
       throw new PikPakError(httpErrorMessage(status))
     }
 
@@ -229,14 +215,19 @@ async function transfer(
         await mkdir(path.dirname(destination), { recursive: true })
         await (await open(destination, 'w')).close()
       }
+    } else if (startedAt > 0) {
+      const isFullFile = remoteSize > startedAt && (expectedSize <= 0 || remoteSize >= expectedSize)
+      if (!isFullFile) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new PikPakError(httpErrorMessage(416))
+      }
+      await rm(destination, { force: true })
+      startedAt = 0
+      received = 0
     } else {
       await rm(destination, { force: true })
       startedAt = 0
       received = 0
-    }
-
-    if (!response.body) {
-      throw new PikPakError('没有下载数据')
     }
 
     const flags = status === 206 ? 'a' : 'w'
@@ -244,31 +235,11 @@ async function transfer(
     const expected =
       status === 206 ? startedAt + Math.max(0, remoteSize) : Math.max(expectedSize, remoteSize)
     onProgress(received, expected)
-
     try {
-      const reader = response.body.getReader()
-      const cancelRead = (): void => {
-        void reader.cancel().catch(() => undefined)
-      }
-      signal.addEventListener('abort', cancelRead)
-      controller.signal.addEventListener('abort', cancelRead)
-      try {
-        while (true) {
-          if (signal.aborted || controller.signal.aborted) {
-            throw new PikPakError('已取消')
-          }
-          const { done, value } = await reader.read()
-          if (done) break
-          if (!value || value.byteLength === 0) continue
-          received += value.byteLength
-          bumpStall()
-          await writeChunk(stream, Buffer.from(value))
-          onProgress(received, expected)
-        }
-      } finally {
-        signal.removeEventListener('abort', cancelRead)
-        controller.signal.removeEventListener('abort', cancelRead)
-      }
+      await pumpBody(response, (chunk) => writeChunk(stream, chunk), signal, controller, bumpStall, (n) => {
+        received += n
+        onProgress(received, expected)
+      })
       await new Promise<void>((resolve, reject) => {
         stream.end((error: Error | null | undefined) => {
           if (error) reject(error)
@@ -277,11 +248,6 @@ async function transfer(
       })
     } catch (error) {
       stream.destroy()
-      const abortedByUser = signal.aborted
-      const aborted = abortedByUser || controller.signal.aborted
-      if (aborted) {
-        throw new PikPakError(abortedByUser || received > startedAt ? '已取消' : '下载超时，没有收到数据')
-      }
       throw error
     }
   } finally {
@@ -412,7 +378,9 @@ export class DownloadManager {
   }
 
   clearFinished(): void {
-    this.items = this.items.filter((item) => item.status !== 'completed' && item.status !== 'partial' && item.status !== 'cancelled')
+    this.items = this.items.filter(
+      (item) => item.status !== 'completed' && item.status !== 'partial' && item.status !== 'cancelled'
+    )
     this.onChange()
   }
 
@@ -472,7 +440,9 @@ export class DownloadManager {
 
       let attempt = 0
       let delay = 400
-      let lastError: Error = new PikPakError(`源站下不完（${formatBytes(existing)} / ${formatBytes(item.expectedSize)}）`)
+      let lastError: Error = new PikPakError(
+        `源站下不完（${formatBytes(existing)} / ${formatBytes(item.expectedSize)}）`
+      )
       let finished = false
       let lastSize = existing
       let stagnantRounds = 0
@@ -482,37 +452,16 @@ export class DownloadManager {
         const startedAt = Date.now()
         const startBytes = await fileSize(destination)
         try {
-          const urls = await this.client.downloadURLs(item.fileId, this.preferTranscoding)
-          let transferred = false
-          let urlError: Error | null = null
-          for (const remote of urls) {
-            try {
-              await transfer(
-                remote,
-                destination,
-                item.expectedSize,
-                this.client.userAgent,
-                signal,
-                (written, expected) => {
-                  item.receivedBytes = written
-                  if (expected > 0) item.totalBytes = Math.max(expected, item.expectedSize)
-                  const elapsed = (Date.now() - startedAt) / 1000
-                  if (elapsed > 0.25) {
-                    item.bytesPerSecond = Math.max(0, written - startBytes) / elapsed
-                  }
-                  this.onChange()
-                }
-              )
-              transferred = true
-              break
-            } catch (error) {
-              if (error instanceof PikPakError && error.message === '已取消') throw error
-              urlError = error instanceof Error ? error : new Error(String(error))
+          const remote = await this.client.downloadURL(item.fileId, this.preferTranscoding)
+          await transfer(remote, destination, item.expectedSize, this.client.userAgent, signal, (written, expected) => {
+            item.receivedBytes = written
+            if (expected > 0) item.totalBytes = Math.max(expected, item.expectedSize)
+            const elapsed = (Date.now() - startedAt) / 1000
+            if (elapsed > 0.25) {
+              item.bytesPerSecond = Math.max(0, written - startBytes) / elapsed
             }
-          }
-          if (!transferred) {
-            throw urlError ?? new PikPakError('没有可用的下载地址')
-          }
+            this.onChange()
+          })
           finished = true
           break
         } catch (error) {

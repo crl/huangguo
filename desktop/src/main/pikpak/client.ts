@@ -73,30 +73,6 @@ type CaptchaInitResponse = {
   error_description?: string
 }
 
-function collectHttpUrls(value: unknown, out: string[]): void {
-  if (value == null) return
-  if (typeof value === 'string') {
-    if (
-      /^https?:\/\//i.test(value) &&
-      !out.includes(value) &&
-      !/thumbnail|googleusercontent|=w\d+|size=w/i.test(value)
-    ) {
-      out.push(value)
-    }
-    return
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectHttpUrls(item, out)
-    return
-  }
-  if (typeof value === 'object') {
-    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-      if (key === 'thumbnail_link' || key === 'icon_link') continue
-      collectHttpUrls(nested, out)
-    }
-  }
-}
-
 function asInt64(value: string | number | undefined): number {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
   if (typeof value === 'string') {
@@ -296,37 +272,27 @@ export class PikPakShareClient {
     return result
   }
 
-  async downloadURLs(fileId: string, preferTranscoding: boolean): Promise<string[]> {
+  async downloadURL(fileId: string, preferTranscoding: boolean): Promise<string> {
     const response = await this.getFileInfo(fileId)
     const info = response.file_info
+    const direct = info?.web_content_link ?? ''
     const medias = info?.medias ?? []
-    const urls: string[] = []
-    const push = (url?: string): void => {
-      if (url && !urls.includes(url)) urls.push(url)
+    let candidate = ''
+    if (preferTranscoding && medias.length > 1 && medias[1]?.link?.url) {
+      candidate = medias[1].link.url
+    } else if (direct) {
+      candidate = direct
+    } else {
+      const origin = medias.find((media) => media.is_origin)?.link?.url
+      candidate = origin || medias[0]?.link?.url || ''
     }
-
-    if (preferTranscoding && medias.length > 1) {
-      push(medias[1]?.link?.url)
+    if (!candidate) {
+      candidate = info?.links?.['application/octet-stream']?.url ?? ''
     }
-    push(info?.web_content_link)
-    push(info?.links?.['application/octet-stream']?.url)
-    push(medias.find((media) => media.is_origin)?.link?.url)
-    for (const media of medias) {
-      push(media.link?.url)
-    }
-    collectHttpUrls(info, urls)
-
-    if (urls.length === 0) {
-      const retry = await this.getFileInfo(fileId, { usage: 'FETCH' })
-      collectHttpUrls(retry.file_info, urls)
-      push(retry.file_info?.web_content_link)
-      push(retry.file_info?.links?.['application/octet-stream']?.url)
-    }
-
-    if (urls.length === 0) {
+    if (!candidate) {
       throw new PikPakError('没有拿到下载地址')
     }
-    return urls
+    return candidate
   }
 
   private async isValidFolder(parentId: string): Promise<boolean> {
