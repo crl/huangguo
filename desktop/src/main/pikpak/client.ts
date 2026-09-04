@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { net } from 'electron'
-import { isFolder, isVideo, type ShareItem } from '../../shared/types'
+import { isFolder, type ShareItem } from '../../shared/types'
 import { sanitizeFileName } from '../../shared/format'
 import {
   allProfiles,
@@ -49,6 +49,7 @@ type ShareFileDTO = {
   thumbnail_link?: string
   web_content_link?: string
   medias?: ShareMediaDTO[]
+  links?: Record<string, { url?: string }>
 }
 
 type ShareAPIResponse = {
@@ -70,6 +71,30 @@ type CaptchaInitResponse = {
   error_code?: number
   error?: string
   error_description?: string
+}
+
+function collectHttpUrls(value: unknown, out: string[]): void {
+  if (value == null) return
+  if (typeof value === 'string') {
+    if (
+      /^https?:\/\//i.test(value) &&
+      !out.includes(value) &&
+      !/thumbnail|googleusercontent|=w\d+|size=w/i.test(value)
+    ) {
+      out.push(value)
+    }
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectHttpUrls(item, out)
+    return
+  }
+  if (typeof value === 'object') {
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      if (key === 'thumbnail_link' || key === 'icon_link') continue
+      collectHttpUrls(nested, out)
+    }
+  }
 }
 
 function asInt64(value: string | number | undefined): number {
@@ -251,15 +276,15 @@ export class PikPakShareClient {
     return items
   }
 
-  async collectVideos(folderId: string, pathPrefix: string): Promise<PendingDownload[]> {
+  async collectFiles(folderId: string, pathPrefix: string): Promise<PendingDownload[]> {
     const listing = await this.list(folderId)
     const result: PendingDownload[] = []
     for (const item of listing) {
       const safeName = sanitizeFileName(item.name)
       if (isFolder(item)) {
         const nestedPath = pathPrefix ? `${pathPrefix}/${safeName}` : safeName
-        result.push(...(await this.collectVideos(item.id, nestedPath)))
-      } else if (isVideo(item)) {
+        result.push(...(await this.collectFiles(item.id, nestedPath)))
+      } else {
         result.push({
           fileId: item.id,
           fileName: safeName,
@@ -271,26 +296,37 @@ export class PikPakShareClient {
     return result
   }
 
-  async downloadURL(fileId: string, preferTranscoding: boolean): Promise<string> {
+  async downloadURLs(fileId: string, preferTranscoding: boolean): Promise<string[]> {
     const response = await this.getFileInfo(fileId)
     const info = response.file_info
-    const direct = info?.web_content_link ?? ''
     const medias = info?.medias ?? []
-
-    let candidate = ''
-    if (preferTranscoding && medias.length > 1 && medias[1]?.link?.url) {
-      candidate = medias[1].link.url
-    } else if (direct) {
-      candidate = direct
-    } else {
-      const origin = medias.find((media) => media.is_origin)?.link?.url
-      candidate = origin || medias[0]?.link?.url || ''
+    const urls: string[] = []
+    const push = (url?: string): void => {
+      if (url && !urls.includes(url)) urls.push(url)
     }
 
-    if (!candidate) {
-      throw new PikPakError('没有拿到下载地址（该文件可能不是可直链视频）')
+    if (preferTranscoding && medias.length > 1) {
+      push(medias[1]?.link?.url)
     }
-    return candidate
+    push(info?.web_content_link)
+    push(info?.links?.['application/octet-stream']?.url)
+    push(medias.find((media) => media.is_origin)?.link?.url)
+    for (const media of medias) {
+      push(media.link?.url)
+    }
+    collectHttpUrls(info, urls)
+
+    if (urls.length === 0) {
+      const retry = await this.getFileInfo(fileId, { usage: 'FETCH' })
+      collectHttpUrls(retry.file_info, urls)
+      push(retry.file_info?.web_content_link)
+      push(retry.file_info?.links?.['application/octet-stream']?.url)
+    }
+
+    if (urls.length === 0) {
+      throw new PikPakError('没有拿到下载地址')
+    }
+    return urls
   }
 
   private async isValidFolder(parentId: string): Promise<boolean> {
@@ -369,11 +405,13 @@ export class PikPakShareClient {
     })
   }
 
-  private getFileInfo(fileId: string): Promise<ShareAPIResponse> {
+  private getFileInfo(fileId: string, extra: Record<string, string> = {}): Promise<ShareAPIResponse> {
     return this.apiGET('/drive/v1/share/file_info', {
       share_id: this.shareId,
       file_id: fileId,
-      pass_code_token: this.passCodeToken
+      pass_code_token: this.passCodeToken,
+      thumbnail_size: 'SIZE_LARGE',
+      ...extra
     })
   }
 

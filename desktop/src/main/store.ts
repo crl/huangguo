@@ -1,5 +1,6 @@
-import { BrowserWindow, dialog, shell } from 'electron'
 import { promises as fs } from 'node:fs'
+import { pathToFileURL } from 'node:url'
+import { BrowserWindow, dialog, shell } from 'electron'
 import { sanitizeFileName } from '../shared/format'
 import { isFolder, isVideo, type AppState, type Breadcrumb, type ShareItem } from '../shared/types'
 import { parseShareLink, PikPakShareClient, type PendingDownload } from './pikpak/client'
@@ -27,6 +28,7 @@ export class AppStore {
   private currentParentId = ''
   private persistTimer: NodeJS.Timeout | null = null
   private emitTimer: NodeJS.Timeout | null = null
+  private lastEmit = 0
   private window: BrowserWindow | null = null
 
   constructor(settings: PersistedSettings, onImmediateChange?: () => void) {
@@ -35,8 +37,8 @@ export class AppStore {
     this.saveDirectory = settings.saveDirectory
     this.preferTranscoding = settings.preferTranscoding
     this.client = new PikPakShareClient(settings.deviceIDs)
-    this.downloads = new DownloadManager(this.client, () => {
-      this.emit()
+    this.downloads = new DownloadManager(this.client, (immediate = false) => {
+      this.emit(immediate)
       onImmediateChange?.()
     })
     this.downloads.preferTranscoding = settings.preferTranscoding
@@ -69,10 +71,19 @@ export class AppStore {
 
   emit(immediate = false): void {
     const send = (): void => {
+      this.lastEmit = Date.now()
       this.window?.webContents.send('state', this.snapshot())
     }
     if (immediate) {
-      if (this.emitTimer) clearTimeout(this.emitTimer)
+      if (this.emitTimer) {
+        clearTimeout(this.emitTimer)
+        this.emitTimer = null
+      }
+      send()
+      return
+    }
+    const wait = 80 - (Date.now() - this.lastEmit)
+    if (wait <= 0 && !this.emitTimer) {
       send()
       return
     }
@@ -80,7 +91,7 @@ export class AppStore {
     this.emitTimer = setTimeout(() => {
       this.emitTimer = null
       send()
-    }, 80)
+    }, Math.max(0, wait))
   }
 
   persist(): void {
@@ -244,7 +255,7 @@ export class AppStore {
           this.statusText = `正在扫描 ${item.name}…`
           this.emit(true)
           const nestedPath = currentPath ? `${currentPath}/${safeName}` : safeName
-          pending.push(...(await this.client.collectVideos(item.id, nestedPath)))
+          pending.push(...(await this.client.collectFiles(item.id, nestedPath)))
         } else {
           pending.push({
             fileId: item.id,
@@ -290,7 +301,10 @@ export class AppStore {
   }
 
   async openPath(filePath: string): Promise<void> {
-    await shell.openPath(filePath)
+    const error = await shell.openPath(filePath)
+    if (error) {
+      await shell.openExternal(pathToFileURL(filePath).href)
+    }
   }
 
   showInFolder(filePath: string): void {

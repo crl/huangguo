@@ -20,6 +20,7 @@ export type HuangguoAPI = {
   cancel: (id: string) => Promise<void>
   cancelAll: () => Promise<void>
   clearFinished: () => Promise<void>
+  remove: (id: string) => Promise<void>
   openSaveDirectory: () => Promise<void>
   openPath: (filePath: string) => Promise<void>
   showInFolder: (filePath: string) => Promise<void>

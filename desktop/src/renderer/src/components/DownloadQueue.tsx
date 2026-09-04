@@ -92,7 +92,7 @@ function DownloadRow({ item }: { item: DownloadItemDTO }): JSX.Element {
       {item.status === 'failed' && item.errorMessage && (
         <p className="mt-1 pl-[34px] text-xs text-danger">{item.errorMessage}</p>
       )}
-      <div className="mt-1 flex gap-3 pl-[34px] text-xs text-rose">
+      <div className="mt-1 flex flex-wrap gap-3 pl-[34px] text-xs text-rose">
         {canRetry && (
           <button type="button" onClick={() => void window.huangguo.retry(item.id)}>
             {item.status === 'partial' ? '继续下载' : statusCanPlay(item.status) ? '重新下载' : '重试'}
@@ -113,6 +113,9 @@ function DownloadRow({ item }: { item: DownloadItemDTO }): JSX.Element {
             </button>
           </>
         )}
+        <button type="button" className="text-danger" onClick={() => void window.huangguo.remove(item.id)}>
+          删除
+        </button>
       </div>
     </li>
   )
