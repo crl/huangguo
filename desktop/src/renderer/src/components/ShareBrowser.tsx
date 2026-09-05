@@ -1,4 +1,4 @@
-import type { JSX } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react'
 import { ChevronRight, File, Folder, LoaderCircle, Play, Search } from 'lucide-react'
 import { formatBytes } from '../../../shared/format'
 import { isFolder, isVideo, type AppState, type ShareItem } from '../../../shared/types'
@@ -10,12 +10,42 @@ function iconFor(item: ShareItem): { color: string; node: JSX.Element } {
   return { color: 'text-file', node: <File className="fill-current" /> }
 }
 
+function matchesSearch(name: string, keyword: string): boolean {
+  const needle = keyword.trim().toLocaleLowerCase()
+  if (!needle) return true
+  return name.toLocaleLowerCase().includes(needle)
+}
+
 export function ShareBrowser({ state }: { state: AppState }): JSX.Element {
-  const keyword = state.searchText.trim().toLowerCase()
-  const filtered = keyword
-    ? state.items.filter((item) => item.name.toLowerCase().includes(keyword))
-    : state.items
+  const currentId = state.breadcrumbs.at(-1)?.id ?? ''
+  const [query, setQuery] = useState(state.searchText)
+  const listRef = useRef<HTMLUListElement>(null)
+  const scrollByFolder = useRef(new Map<string, number>())
+  const ignoreScroll = useRef(false)
+
+  useEffect(() => {
+    setQuery('')
+  }, [currentId])
+
+  useLayoutEffect(() => {
+    if (state.isLoading) return
+    const el = listRef.current
+    if (!el) return
+    ignoreScroll.current = true
+    el.scrollTop = scrollByFolder.current.get(currentId) ?? 0
+    const id = requestAnimationFrame(() => {
+      ignoreScroll.current = false
+    })
+    return () => cancelAnimationFrame(id)
+  }, [currentId, state.items, state.isLoading])
+
+  const filtered = query.trim() ? state.items.filter((item) => matchesSearch(item.name, query)) : state.items
   const selected = new Set(state.selectedIDs)
+
+  const setSearch = (value: string): void => {
+    setQuery(value)
+    void window.huangguo.setSearchText(value)
+  }
 
   return (
     <section className="relative flex min-h-0 min-w-[420px] flex-1 flex-col bg-panel">
@@ -31,7 +61,11 @@ export function ShareBrowser({ state }: { state: AppState }): JSX.Element {
                     ? 'shrink-0 font-semibold'
                     : 'shrink-0 text-rose hover:underline'
                 }
-                onClick={() => void window.huangguo.goToBreadcrumb(crumb.id)}
+                onClick={() => {
+                  const el = listRef.current
+                  if (el && !query.trim()) scrollByFolder.current.set(currentId, el.scrollTop)
+                  void window.huangguo.goToBreadcrumb(crumb.id)
+                }}
               >
                 {crumb.name}
               </button>
@@ -45,8 +79,8 @@ export function ShareBrowser({ state }: { state: AppState }): JSX.Element {
             <input
               className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted/80"
               placeholder="搜索当前目录"
-              value={state.searchText}
-              onChange={(event) => void window.huangguo.setSearchText(event.target.value)}
+              value={query}
+              onChange={(event) => setSearch(event.target.value)}
             />
           </label>
           <QuietButton onClick={() => void window.huangguo.selectAllCurrent()}>全选当前</QuietButton>
@@ -76,7 +110,15 @@ export function ShareBrowser({ state }: { state: AppState }): JSX.Element {
           message={state.items.length === 0 ? '粘贴分享链接，点一下打开就好' : '换个关键词再试试看'}
         />
       ) : (
-        <ul className="min-h-0 flex-1 overflow-auto px-1.5 py-1">
+        <ul
+          key={currentId}
+          ref={listRef}
+          className="min-h-0 flex-1 overflow-auto px-1.5 py-1"
+          onScroll={(event) => {
+            if (ignoreScroll.current || query.trim()) return
+            scrollByFolder.current.set(currentId, event.currentTarget.scrollTop)
+          }}
+        >
           {filtered.map((item) => {
             const checked = selected.has(item.id)
             const icon = iconFor(item)
@@ -87,7 +129,11 @@ export function ShareBrowser({ state }: { state: AppState }): JSX.Element {
                     checked ? 'bg-rose/10' : 'hover:bg-rose/6'
                   }`}
                   onDoubleClick={() => {
-                    if (isFolder(item)) void window.huangguo.enterFolder(item.id)
+                    if (isFolder(item)) {
+                      const el = listRef.current
+                      if (el && !query.trim()) scrollByFolder.current.set(currentId, el.scrollTop)
+                      void window.huangguo.enterFolder(item.id)
+                    }
                   }}
                 >
                   <button

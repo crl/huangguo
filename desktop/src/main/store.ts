@@ -26,6 +26,7 @@ export class AppStore {
 
   private rootParentId = ''
   private currentParentId = ''
+  private readonly selectedByFolder = new Map<string, string[]>()
   private persistTimer: NodeJS.Timeout | null = null
   private emitTimer: NodeJS.Timeout | null = null
   private lastEmit = 0
@@ -149,6 +150,7 @@ export class AppStore {
       this.rootParentId = opened.startParentId
       this.currentParentId = opened.startParentId
       this.breadcrumbs = [{ id: opened.startParentId, name: opened.title }]
+      this.selectedByFolder.clear()
       this.selectedIDs.clear()
       await this.reloadCurrent()
       this.statusText = `已加载 ${this.items.length} 项`
@@ -164,6 +166,7 @@ export class AppStore {
   async enterFolder(itemId: string): Promise<void> {
     const item = this.items.find((entry) => entry.id === itemId)
     if (!item || !isFolder(item)) return
+    this.saveSelection(this.currentParentId)
     this.isLoading = true
     this.errorMessage = null
     this.breadcrumbs.push({ id: item.id, name: item.name })
@@ -173,10 +176,12 @@ export class AppStore {
     this.emit(true)
     try {
       await this.reloadCurrent()
+      this.applySavedSelection(this.currentParentId)
       this.statusText = `已加载 ${this.items.length} 项`
     } catch (error) {
       this.breadcrumbs.pop()
       this.currentParentId = this.breadcrumbs.at(-1)?.id ?? this.rootParentId
+      this.applySavedSelection(this.currentParentId)
       this.errorMessage = error instanceof Error ? error.message : String(error)
     }
     this.isLoading = false
@@ -186,6 +191,7 @@ export class AppStore {
   async goToBreadcrumb(crumbId: string): Promise<void> {
     const index = this.breadcrumbs.findIndex((crumb) => crumb.id === crumbId)
     if (index < 0) return
+    this.saveSelection(this.currentParentId)
     this.breadcrumbs = this.breadcrumbs.slice(0, index + 1)
     this.currentParentId = crumbId
     this.selectedIDs.clear()
@@ -194,12 +200,24 @@ export class AppStore {
     this.emit(true)
     try {
       await this.reloadCurrent()
+      this.applySavedSelection(this.currentParentId)
       this.statusText = `已加载 ${this.items.length} 项`
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : String(error)
     }
     this.isLoading = false
     this.emit(true)
+  }
+
+  private saveSelection(folderId: string): void {
+    if (!folderId) return
+    this.selectedByFolder.set(folderId, [...this.selectedIDs])
+  }
+
+  private applySavedSelection(folderId: string): void {
+    const saved = this.selectedByFolder.get(folderId) ?? []
+    const existing = new Set(this.items.map((item) => item.id))
+    this.selectedIDs = new Set(saved.filter((id) => existing.has(id)))
   }
 
   toggleSelection(itemId: string): void {
@@ -209,9 +227,10 @@ export class AppStore {
   }
 
   private visibleItems(): ShareItem[] {
-    const keyword = this.searchText.trim().toLowerCase()
+    const keyword = this.searchText.trim()
     if (!keyword) return this.items
-    return this.items.filter((item) => item.name.toLowerCase().includes(keyword))
+    const needle = keyword.toLocaleLowerCase()
+    return this.items.filter((item) => item.name.toLocaleLowerCase().includes(needle))
   }
 
   selectAllCurrent(): void {
