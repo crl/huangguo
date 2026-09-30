@@ -62,6 +62,7 @@ function bindIpc(): void {
   ipcMain.handle('share:url', (_event, value: string) => store?.setShareURL(value))
   ipcMain.handle('share:password', (_event, value: string) => store?.setSharePassword(value))
   ipcMain.handle('share:search', (_event, value: string) => store?.setSearchText(value))
+  ipcMain.handle('share:viewMode', (_event, value: 'list' | 'icons') => store?.setViewMode(value))
   ipcMain.handle('share:transcoding', (_event, value: boolean) => store?.setPreferTranscoding(value))
   ipcMain.handle('share:open', () => store?.openShare())
   ipcMain.handle('share:enter', (_event, id: string) => store?.enterFolder(id))
@@ -70,6 +71,7 @@ function bindIpc(): void {
   ipcMain.handle('share:selectAll', () => store?.selectAllCurrent())
   ipcMain.handle('share:selectVideos', () => store?.selectAllVideos())
   ipcMain.handle('share:download', () => store?.downloadSelected())
+  ipcMain.handle('share:downloadItem', (_event, id: string) => store?.downloadItem(id))
   ipcMain.handle('share:chooseDir', () => store?.chooseSaveDirectory())
   ipcMain.handle('share:dismissError', () => store?.dismissError())
   ipcMain.handle('download:retry', (_event, id: string) => {

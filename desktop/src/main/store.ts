@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { BrowserWindow, dialog, shell } from 'electron'
 import { sanitizeFileName } from '../shared/format'
-import { isFolder, isVideo, type AppState, type Breadcrumb, type ShareItem } from '../shared/types'
+import { isFolder, isImage, isVideo, type AppState, type Breadcrumb, type ShareItem, type ViewMode } from '../shared/types'
 import { parseShareLink, PikPakShareClient, type PendingDownload } from './pikpak/client'
 import { DownloadManager, toDTO } from './pikpak/download'
 import { loadSettings, saveSettings, type PersistedSettings } from './settings'
@@ -19,6 +19,7 @@ export class AppStore {
   breadcrumbs: Breadcrumb[] = []
   selectedIDs = new Set<string>()
   searchText = ''
+  viewMode: ViewMode = 'list'
   preferTranscoding = false
 
   readonly client: PikPakShareClient
@@ -36,11 +37,14 @@ export class AppStore {
     this.shareURL = settings.shareURL
     this.sharePassword = settings.sharePassword
     this.saveDirectory = settings.saveDirectory
+    this.viewMode = settings.viewMode
     this.preferTranscoding = settings.preferTranscoding
     this.client = new PikPakShareClient(settings.deviceIDs)
     this.downloads = new DownloadManager(this.client, (immediate = false) => {
       this.emit(immediate)
       onImmediateChange?.()
+    }, (filePath) => {
+      void this.openPath(filePath)
     })
     this.downloads.preferTranscoding = settings.preferTranscoding
   }
@@ -63,6 +67,7 @@ export class AppStore {
       breadcrumbs: this.breadcrumbs,
       selectedIDs: [...this.selectedIDs],
       searchText: this.searchText,
+      viewMode: this.viewMode,
       preferTranscoding: this.preferTranscoding,
       downloads: this.downloads.items.map(toDTO),
       activeCount: this.downloads.activeCount,
@@ -102,6 +107,7 @@ export class AppStore {
         shareURL: this.shareURL,
         sharePassword: this.sharePassword,
         saveDirectory: this.saveDirectory,
+        viewMode: this.viewMode,
         preferTranscoding: this.preferTranscoding,
         deviceIDs: this.client.getDeviceIDs()
       })
@@ -123,6 +129,12 @@ export class AppStore {
 
   setSearchText(value: string): void {
     this.searchText = value
+    this.emit(true)
+  }
+
+  setViewMode(value: ViewMode): void {
+    this.viewMode = value === 'icons' ? 'icons' : 'list'
+    this.persist()
     this.emit(true)
   }
 
@@ -223,6 +235,7 @@ export class AppStore {
   toggleSelection(itemId: string): void {
     if (this.selectedIDs.has(itemId)) this.selectedIDs.delete(itemId)
     else this.selectedIDs.add(itemId)
+    this.saveSelection(this.currentParentId)
     this.emit(true)
   }
 
@@ -240,6 +253,7 @@ export class AppStore {
     } else {
       for (const id of ids) this.selectedIDs.add(id)
     }
+    this.saveSelection(this.currentParentId)
     this.emit(true)
   }
 
@@ -250,12 +264,28 @@ export class AppStore {
     } else {
       for (const id of videos) this.selectedIDs.add(id)
     }
+    this.saveSelection(this.currentParentId)
     this.emit(true)
   }
 
   async downloadSelected(): Promise<void> {
+    await this.enqueueItems([...this.selectedIDs], true)
+  }
+
+  async downloadItem(id: string): Promise<void> {
+    const item = this.items.find((entry) => entry.id === id)
+    if (!item || isFolder(item)) return
+    if (isVideo(item)) {
+      await this.enqueueItems([id], false)
+      return
+    }
+    if (isImage(item)) await this.enqueueItems([id], false, true)
+  }
+
+  private async enqueueItems(ids: string[], clearSelection: boolean, openWhenDone = false): Promise<void> {
     this.persist()
-    if (this.selectedIDs.size === 0) return
+    if (ids.length === 0) return
+    const wanted = new Set(ids)
     this.isScanning = true
     this.errorMessage = null
     this.statusText = '正在准备下载…'
@@ -268,7 +298,7 @@ export class AppStore {
         .map((crumb) => crumb.name)
         .join('/')
       for (const item of this.items) {
-        if (!this.selectedIDs.has(item.id)) continue
+        if (!wanted.has(item.id)) continue
         const safeName = sanitizeFileName(item.name)
         if (isFolder(item)) {
           this.statusText = `正在扫描 ${item.name}…`
@@ -285,9 +315,12 @@ export class AppStore {
         }
       }
       this.downloads.preferTranscoding = this.preferTranscoding
-      this.downloads.enqueue(pending, this.saveDirectory)
+      this.downloads.enqueue(pending, this.saveDirectory, openWhenDone)
       this.statusText = `已加入 ${pending.length} 个文件`
-      this.selectedIDs.clear()
+      if (clearSelection) {
+        this.selectedIDs.clear()
+        this.saveSelection(this.currentParentId)
+      }
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : String(error)
       this.statusText = '准备下载失败'

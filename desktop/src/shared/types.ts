@@ -12,6 +12,20 @@ export const VIDEO_EXTENSIONS = new Set([
   'mpg'
 ])
 
+export const IMAGE_EXTENSIONS = new Set([
+  'jpg',
+  'jpeg',
+  'png',
+  'gif',
+  'webp',
+  'bmp',
+  'heic',
+  'heif',
+  'avif',
+  'tif',
+  'tiff'
+])
+
 export type ShareItem = {
   id: string
   name: string
@@ -19,6 +33,8 @@ export type ShareItem = {
   size: number
   thumbnailLink?: string | null
 }
+
+export type ViewMode = 'list' | 'icons'
 
 export type Breadcrumb = {
   id: string
@@ -61,6 +77,7 @@ export type AppState = {
   breadcrumbs: Breadcrumb[]
   selectedIDs: string[]
   searchText: string
+  viewMode: ViewMode
   preferTranscoding: boolean
   downloads: DownloadItemDTO[]
   activeCount: number
@@ -74,6 +91,11 @@ export function isFolder(item: Pick<ShareItem, 'kind'>): boolean {
 export function isVideo(item: Pick<ShareItem, 'name'>): boolean {
   const ext = item.name.split('.').pop()?.toLowerCase() ?? ''
   return VIDEO_EXTENSIONS.has(ext)
+}
+
+export function isImage(item: Pick<ShareItem, 'name'>): boolean {
+  const ext = item.name.split('.').pop()?.toLowerCase() ?? ''
+  return IMAGE_EXTENSIONS.has(ext)
 }
 
 export function statusIsFinished(status: DownloadStatus): boolean {

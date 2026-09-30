@@ -1,4 +1,4 @@
-import type { AppState } from './types'
+import type { AppState, ViewMode } from './types'
 
 export type HuangguoAPI = {
   getState: () => Promise<AppState | null>
@@ -6,6 +6,7 @@ export type HuangguoAPI = {
   setShareURL: (value: string) => Promise<void>
   setSharePassword: (value: string) => Promise<void>
   setSearchText: (value: string) => Promise<void>
+  setViewMode: (value: ViewMode) => Promise<void>
   setPreferTranscoding: (value: boolean) => Promise<void>
   openShare: () => Promise<void>
   enterFolder: (id: string) => Promise<void>
@@ -14,6 +15,7 @@ export type HuangguoAPI = {
   selectAllCurrent: () => Promise<void>
   selectAllVideos: () => Promise<void>
   downloadSelected: () => Promise<void>
+  downloadItem: (id: string) => Promise<void>
   chooseSaveDirectory: () => Promise<void>
   dismissError: () => Promise<void>
   retry: (id: string) => Promise<void>

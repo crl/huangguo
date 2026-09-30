@@ -276,10 +276,12 @@ export type DownloadItem = {
   errorMessage?: string | null
   localPath?: string | null
   retryCount: number
+  openWhenDone?: boolean
 }
 
 export function toDTO(item: DownloadItem): DownloadItemDTO {
-  return { ...item }
+  const { openWhenDone: _openWhenDone, ...dto } = item
+  return dto
 }
 
 export function makeDestination(item: DownloadItem, saveRoot: string): string {
@@ -301,7 +303,8 @@ export class DownloadManager {
 
   constructor(
     private readonly client: PikPakShareClient,
-    private readonly onChange: (immediate?: boolean) => void
+    private readonly onChange: (immediate?: boolean) => void,
+    private readonly onOpen?: (filePath: string) => void
   ) {}
 
   get activeCount(): number {
@@ -312,7 +315,7 @@ export class DownloadManager {
     return this.items.filter((item) => item.status === 'queued').length
   }
 
-  enqueue(pending: PendingDownload[], saveRoot: string): void {
+  enqueue(pending: PendingDownload[], saveRoot: string, openWhenDone = false): void {
     const existing = new Set(
       this.items
         .filter((item) => item.status !== 'failed' && item.status !== 'cancelled' && !statusCanPlay(item.status))
@@ -321,7 +324,12 @@ export class DownloadManager {
     for (const file of pending) {
       const current = this.items.find((item) => item.fileId === file.fileId)
       if (current) {
+        if (openWhenDone) current.openWhenDone = true
         if (statusCanPlay(current.status)) {
+          if (openWhenDone) {
+            this.openIfReady(current, saveRoot)
+            continue
+          }
           const dest = makeDestination(current, saveRoot)
           void isPlayable(dest).then((playable) => {
             if (playable) return
@@ -341,12 +349,20 @@ export class DownloadManager {
         receivedBytes: 0,
         totalBytes: file.expectedSize,
         bytesPerSecond: 0,
-        retryCount: 0
+        retryCount: 0,
+        openWhenDone
       }
       this.items.unshift(item)
       this.start(item, saveRoot)
     }
     this.onChange(true)
+  }
+
+  private openIfReady(item: DownloadItem, saveRoot: string): void {
+    if (!item.openWhenDone) return
+    const dest = item.localPath || makeDestination(item, saveRoot)
+    item.openWhenDone = false
+    this.onOpen?.(dest)
   }
 
   retry(id: string, saveRoot: string): void {
@@ -431,6 +447,7 @@ export class DownloadManager {
         item.totalBytes = Math.max(existing, item.expectedSize)
         item.status = 'completed'
         this.onChange()
+        this.openIfReady(item, saveRoot)
         return
       }
       item.status = 'downloading'
@@ -498,6 +515,7 @@ export class DownloadManager {
         throw lastError
       }
       this.onChange()
+      this.openIfReady(item, saveRoot)
     } catch (error) {
       if (error instanceof PikPakError && error.message === '已取消') {
         item.status = 'cancelled'
