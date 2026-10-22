@@ -1,4 +1,4 @@
-# 黄果下载
+# 网盘下载
 
 macOS 原生，以及 Windows 可用的 Electron 版 [PikPak](https://mypikpak.com) 分享下载器。粘贴 `mypikpak.com/s/…` 链接，浏览目录、勾选文件或文件夹，批量下到本地。
 
