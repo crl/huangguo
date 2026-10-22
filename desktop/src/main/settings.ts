@@ -5,7 +5,7 @@ import { app } from 'electron'
 import type { ViewMode } from '../shared/types'
 
 export const DEFAULT_SHARE_URL =
-  'https://mypikpak.com/s/VP0D6es97vgNquS_avxUCiOIo2/ABEOncidTpkZZZFFWu0AE3mmo2_VOw'
+  'https://mypikpak.com/s/VP3KH3E7ppAzZZ4DNMYrc-ioo2/AAAAEIoPCqtcutnuNj8op4Ylo2_VP3'
 
 export type PersistedSettings = {
   shareURL: string
