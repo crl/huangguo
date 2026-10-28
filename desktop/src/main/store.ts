@@ -7,6 +7,16 @@ import { parseShareLink, PikPakShareClient, type PendingDownload } from './pikpa
 import { DownloadManager, toDTO } from './pikpak/download'
 import { loadSettings, saveSettings, type PersistedSettings } from './settings'
 
+function shareFilePage(shareId: string, folders: Breadcrumb[] | undefined, fileId: string): string {
+  if (!shareId) return ''
+  const ids = [shareId]
+  for (const crumb of folders ?? []) {
+    if (crumb.id && crumb.id !== ids.at(-1)) ids.push(crumb.id)
+  }
+  if (fileId && fileId !== ids.at(-1)) ids.push(fileId)
+  return `https://mypikpak.com/s/${ids.join('/')}`
+}
+
 export class AppStore {
   shareURL = ''
   sharePassword = ''
@@ -27,6 +37,9 @@ export class AppStore {
 
   private rootParentId = ''
   private currentParentId = ''
+  private readonly directoryCache = new Map<string, ShareItem[]>()
+  private readonly downloadSources = new Map<string, Breadcrumb[]>()
+  private readonly downloadShareIds = new Map<string, string>()
   private readonly selectedByFolder = new Map<string, string[]>()
   private persistTimer: NodeJS.Timeout | null = null
   private emitTimer: NodeJS.Timeout | null = null
@@ -151,6 +164,7 @@ export class AppStore {
   }
 
   async openShare(): Promise<void> {
+    if (this.isLoading) return
     this.persist()
     this.isLoading = true
     this.errorMessage = null
@@ -159,6 +173,9 @@ export class AppStore {
     try {
       const parsed = parseShareLink(this.shareURL)
       const opened = await this.client.openShare(parsed.shareId, this.sharePassword, parsed.parentId)
+      this.directoryCache.clear()
+      this.downloadSources.clear()
+      this.downloadShareIds.clear()
       this.rootParentId = opened.startParentId
       this.currentParentId = opened.startParentId
       this.breadcrumbs = [{ id: opened.startParentId, name: opened.title }]
@@ -176,16 +193,17 @@ export class AppStore {
   }
 
   async enterFolder(itemId: string): Promise<void> {
+    if (this.isLoading) return
     const item = this.items.find((entry) => entry.id === itemId)
     if (!item || !isFolder(item)) return
     this.saveSelection(this.currentParentId)
-    this.isLoading = true
+    this.isLoading = !this.directoryCache.has(item.id)
     this.errorMessage = null
     this.breadcrumbs.push({ id: item.id, name: item.name })
     this.currentParentId = item.id
     this.selectedIDs.clear()
     this.searchText = ''
-    this.emit(true)
+    if (this.isLoading) this.emit(true)
     try {
       await this.reloadCurrent()
       this.applySavedSelection(this.currentParentId)
@@ -201,6 +219,7 @@ export class AppStore {
   }
 
   async goToBreadcrumb(crumbId: string): Promise<void> {
+    if (this.isLoading || crumbId === this.currentParentId) return
     const index = this.breadcrumbs.findIndex((crumb) => crumb.id === crumbId)
     if (index < 0) return
     this.saveSelection(this.currentParentId)
@@ -208,8 +227,9 @@ export class AppStore {
     this.currentParentId = crumbId
     this.selectedIDs.clear()
     this.searchText = ''
-    this.isLoading = true
-    this.emit(true)
+    this.isLoading = !this.directoryCache.has(crumbId)
+    this.errorMessage = null
+    if (this.isLoading) this.emit(true)
     try {
       await this.reloadCurrent()
       this.applySavedSelection(this.currentParentId)
@@ -304,17 +324,31 @@ export class AppStore {
           this.statusText = `正在扫描 ${item.name}…`
           this.emit(true)
           const nestedPath = currentPath ? `${currentPath}/${safeName}` : safeName
-          pending.push(...(await this.client.collectFiles(item.id, nestedPath)))
+          pending.push(...(await this.client.collectFiles(item.id, nestedPath, [...this.breadcrumbs, { id: item.id, name: item.name }])))
         } else {
           pending.push({
             fileId: item.id,
             fileName: safeName,
             relativePath: currentPath,
+            sourceBreadcrumbs: [...this.breadcrumbs],
             expectedSize: item.size
           })
         }
       }
       this.downloads.preferTranscoding = this.preferTranscoding
+      let shareId = ''
+      try {
+        shareId = parseShareLink(this.shareURL).shareId
+      } catch {
+        shareId = ''
+      }
+      for (const file of pending) {
+        if (file.sourceBreadcrumbs) this.downloadSources.set(file.fileId, file.sourceBreadcrumbs)
+        if (shareId) this.downloadShareIds.set(file.fileId, shareId)
+        const watchURL = shareFilePage(shareId, file.sourceBreadcrumbs, file.fileId)
+        const queued = this.downloads.items.find((entry) => entry.fileId === file.fileId)
+        if (queued && watchURL) queued.watchURL = watchURL
+      }
       this.downloads.enqueue(pending, this.saveDirectory, openWhenDone)
       this.statusText = `已加入 ${pending.length} 个文件`
       if (clearSelection) {
@@ -347,6 +381,62 @@ export class AppStore {
     this.emit(true)
   }
 
+  async openWatchPage(fileId: string): Promise<void> {
+    const saved = this.downloads.items.find((entry) => entry.fileId === fileId)?.watchURL
+    if (saved) {
+      await shell.openExternal(saved)
+      return
+    }
+    let shareId = this.downloadShareIds.get(fileId) ?? ''
+    if (!shareId) {
+      try {
+        shareId = parseShareLink(this.shareURL).shareId
+      } catch {
+        shareId = ''
+      }
+    }
+    if (!shareId) {
+      this.errorMessage = '先打开分享，才能在网页里播放'
+      this.emit(true)
+      return
+    }
+    const ids = [shareId]
+    for (const crumb of this.downloadSources.get(fileId) ?? []) {
+      if (crumb.id && crumb.id !== ids.at(-1)) ids.push(crumb.id)
+    }
+    if (fileId !== ids.at(-1)) ids.push(fileId)
+    await shell.openExternal(`https://mypikpak.com/s/${ids.join('/')}`)
+  }
+
+  async locateDownload(fileId: string): Promise<void> {
+    if (this.isLoading) return
+    const crumbs = this.downloadSources.get(fileId)
+    if (!crumbs?.length) {
+      this.errorMessage = '该任务的来源目录不可用，请先打开原分享。'
+      this.emit(true)
+      return
+    }
+    const folderId = crumbs.at(-1)!.id
+    this.saveSelection(this.currentParentId)
+    this.isLoading = !this.directoryCache.has(folderId)
+    this.errorMessage = null
+    if (this.isLoading) this.emit(true)
+    try {
+      const items = this.directoryCache.get(folderId) ?? await this.client.list(folderId)
+      this.directoryCache.set(folderId, items)
+      this.items = items
+      this.breadcrumbs = [...crumbs]
+      this.currentParentId = folderId
+      this.selectedIDs = new Set([fileId])
+      this.searchText = items.find((item) => item.id === fileId)?.name ?? ''
+      this.statusText = '已定位下载文件'
+    } catch (error) {
+      this.errorMessage = error instanceof Error ? error.message : String(error)
+    }
+    this.isLoading = false
+    this.emit(true)
+  }
+
   async openSaveDirectory(): Promise<void> {
     await fs.mkdir(this.saveDirectory, { recursive: true })
     await shell.openPath(this.saveDirectory)
@@ -364,6 +454,14 @@ export class AppStore {
   }
 
   private async reloadCurrent(): Promise<void> {
-    this.items = await this.client.list(this.currentParentId)
+    const folderId = this.currentParentId
+    const cached = this.directoryCache.get(folderId)
+    if (cached) {
+      this.items = cached
+      return
+    }
+    const items = await this.client.list(folderId)
+    this.directoryCache.set(folderId, items)
+    this.items = items
   }
 }

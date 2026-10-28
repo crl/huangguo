@@ -1,15 +1,18 @@
-import type { JSX } from 'react'
+import { useState, type JSX } from 'react'
 import {
   AlertTriangle,
   ArrowDownCircle,
   CheckCircle2,
   Clock,
+  PanelRightClose,
+  PanelRightOpen,
   Link2,
   PlayCircle,
   XCircle
 } from 'lucide-react'
 import { formatBytes } from '../../../shared/format'
 import {
+  isVideo,
   statusCanPlay,
   statusIsFinished,
   type AppState,
@@ -116,17 +119,56 @@ function DownloadRow({ item }: { item: DownloadItemDTO }): JSX.Element {
         <button type="button" className="text-danger" onClick={() => void window.huangguo.remove(item.id)}>
           删除
         </button>
+        <button type="button" onClick={() => void window.huangguo.locateDownload(item.fileId)}>
+          来源
+        </button>
+        {isVideo({ name: item.fileName }) && (
+          <button type="button" onClick={() => void window.huangguo.openWatchPage(item.fileId)}>
+            网页
+          </button>
+        )}
       </div>
     </li>
   )
 }
 
 export function DownloadQueue({ state }: { state: AppState }): JSX.Element {
+  const [collapsed, setCollapsed] = useState(false)
   const noneFinished = state.downloads.every((item) => !statusIsFinished(item.status))
+  if (collapsed) {
+    return (
+      <aside className="flex w-12 shrink-0 flex-col items-center gap-3 border-l border-hairline py-3" style={{ background: 'var(--queue)' }}>
+        <button
+          type="button"
+          aria-label="展开下载队列"
+          aria-expanded={false}
+          title="展开下载队列"
+          className="rounded-lg p-2 text-rose-deep hover:bg-rose/15"
+          onClick={() => setCollapsed(false)}
+        >
+          <PanelRightOpen className="size-4" />
+        </button>
+        <span className="text-xs font-medium [writing-mode:vertical-rl]">下载队列</span>
+        <span className="text-xs text-rose-deep" title={`进行中 ${state.activeCount} · 排队 ${state.queuedCount}`}>
+          {state.activeCount + state.queuedCount}
+        </span>
+      </aside>
+    )
+  }
   return (
     <aside className="flex w-[400px] min-w-[320px] shrink-0 flex-col" style={{ background: 'var(--queue)' }}>
       <div className="flex items-center px-3.5 pb-2 pt-3">
         <h2 className="text-[15px] font-semibold">下载队列</h2>
+        <button
+          type="button"
+          aria-label="收起下载队列"
+          aria-expanded={true}
+          title="收起下载队列"
+          className="ml-1 rounded-lg p-1.5 text-rose-deep hover:bg-rose/15"
+          onClick={() => setCollapsed(true)}
+        >
+          <PanelRightClose className="size-4" />
+        </button>
         <span className="ml-auto text-xs text-muted">
           进行中 {state.activeCount} · 排队 {state.queuedCount}
         </span>

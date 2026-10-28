@@ -277,10 +277,11 @@ export type DownloadItem = {
   localPath?: string | null
   retryCount: number
   openWhenDone?: boolean
+  watchURL?: string
 }
 
 export function toDTO(item: DownloadItem): DownloadItemDTO {
-  const { openWhenDone: _openWhenDone, ...dto } = item
+  const { openWhenDone: _openWhenDone, watchURL: _watchURL, ...dto } = item
   return dto
 }
 
@@ -450,7 +451,6 @@ export class DownloadManager {
         this.openIfReady(item, saveRoot)
         return
       }
-      item.status = 'downloading'
       item.receivedBytes = existing
       item.totalBytes = Math.max(item.expectedSize, existing)
       this.onChange()
@@ -470,6 +470,8 @@ export class DownloadManager {
         const startBytes = await fileSize(destination)
         try {
           const remote = await this.client.downloadURL(item.fileId, this.preferTranscoding)
+          item.status = 'downloading'
+          this.onChange()
           await transfer(remote, destination, item.expectedSize, this.client.userAgent, signal, (written, expected) => {
             item.receivedBytes = written
             if (expected > 0) item.totalBytes = Math.max(expected, item.expectedSize)
@@ -482,7 +484,9 @@ export class DownloadManager {
           finished = true
           break
         } catch (error) {
-          if (error instanceof PikPakError && error.message === '已取消') throw error
+          if (error instanceof PikPakError && (error.message === '已取消' || error.message.includes('没有直链'))) {
+            throw error
+          }
           lastError = error instanceof Error ? error : new Error(String(error))
           attempt += 1
           const now = await fileSize(destination)

@@ -1,13 +1,42 @@
-import type { JSX } from 'react'
+import { useEffect, useRef, useState, type JSX } from 'react'
 import { Folder, KeyRound, Link2, LoaderCircle } from 'lucide-react'
 import type { AppState } from '../../../shared/types'
 import { BrandMark, RoseButton, WindowControls } from './widgets'
 
+const sharePresets = [
+  'https://mypikpak.com/s/VP4-ev164HCWluoJSA8wdq7Ko2/AAO3_OoLU43uaC17RAQjlIBgo2_VP2/AAA_h5VjTDWZl9SAtwWPQTQto2_VP4',
+  'https://mypikpak.com/s/VP3KH3E7ppAzZZ4DNMYrc-ioo2/AAAAEIoPCqtcutnuNj8op4Ylo2_VP3',
+  'https://mypikpak.com/s/VP2en7G4U5iUH-iq1c859v4Qo2/AAC_6JVcChzYyDg8-1kz7WIko2_VP0',
+  'https://mypikpak.com/s/VP0wib21ePNb_Dh-17ercY_lo2/AAAA2Yu8Oja1sI61Huva4Qfuo2_VP0/AAMRKpfE8-PxCC405bMgzBtYo2_VP4',
+  'https://mypikpak.com/s/VP17peg3GYHJVSzZCxilcxQTo2/AABbOWIT4DzxaqBtpKMuU4J7o2_VP0'
+]
+
 export function TopBar({ state }: { state: AppState }): JSX.Element {
+  const isMac = window.huangguo.platform === 'darwin'
+  const [presetsOpen, setPresetsOpen] = useState(false)
+  const presetsRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!presetsOpen) return
+    const closeOutside = (event: PointerEvent): void => {
+      if (!presetsRef.current?.contains(event.target as Node)) setPresetsOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setPresetsOpen(false)
+        presetsRef.current?.querySelector('button')?.focus()
+      }
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [presetsOpen])
   return (
     <div className="header-wash drag-region px-4 pb-3 pt-2">
       <div className="mb-2.5 flex items-center gap-2.5">
-        <div className="h-3 w-[18px]" />
+        {isMac && <div className="h-3 w-[68px] shrink-0" aria-hidden="true" />}
         <BrandMark />
         <div className="min-w-0">
           <h1 className="text-[15px] font-semibold leading-tight">黄果下载</h1>
@@ -19,13 +48,45 @@ export function TopBar({ state }: { state: AppState }): JSX.Element {
           <LoaderCircle className="no-drag size-4 animate-spin text-rose" />
         )}
         <div className="flex-1" />
-        <WindowControls />
+        {!isMac && <WindowControls />}
       </div>
 
       <div className="mb-2.5 flex gap-2">
-        <label className="no-drag flex min-w-0 flex-1 items-center gap-2 rounded-[10px] border border-rose/16 bg-field px-2.5 py-2">
-          <Link2 className="size-4 shrink-0 text-rose/85" />
+        <div className="no-drag relative flex min-w-0 flex-1 items-center gap-2 rounded-[10px] border border-rose/16 bg-field px-2.5 py-2" ref={presetsRef}>
+          <button
+            type="button"
+            aria-label="选择分享地址"
+            aria-expanded={presetsOpen}
+            aria-controls="share-presets"
+            title="选择分享地址"
+            className="shrink-0 rounded p-1 text-rose/85 hover:bg-rose/15"
+            onClick={() => setPresetsOpen((open) => !open)}
+          >
+            <Link2 className="size-4" />
+          </button>
+          {presetsOpen && (
+            <div id="share-presets" className="absolute left-0 top-full z-30 mt-1 w-full rounded-xl border border-hairline bg-panel p-1.5 shadow-lg">
+              {sharePresets.map((url, index) => (
+                <button
+                  key={url}
+                  type="button"
+                  title={url}
+                  className={`block w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-rose/15 ${state.shareURL === url ? 'bg-rose/10 text-rose-deep' : 'text-muted'}`}
+                  disabled={state.isLoading}
+                  onClick={async () => {
+                    setPresetsOpen(false)
+                    await window.huangguo.setShareURL(url)
+                    await window.huangguo.openShare()
+                  }}
+                >
+                  <span className="mb-1 block font-medium">分享 {index + 1}{state.shareURL === url ? ' · 当前' : ''}</span>
+                  <span className="block break-all">{url}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <input
+            aria-label="分享地址"
             className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted/80"
             placeholder="粘贴 mypikpak.com/s/… 分享链接"
             value={state.shareURL}
@@ -34,7 +95,7 @@ export function TopBar({ state }: { state: AppState }): JSX.Element {
               if (event.key === 'Enter') void window.huangguo.openShare()
             }}
           />
-        </label>
+        </div>
         <label className="no-drag flex w-[124px] shrink-0 items-center gap-2 rounded-[10px] border border-rose/16 bg-field px-2.5 py-2">
           <KeyRound className="size-4 shrink-0 text-rose/85" />
           <input

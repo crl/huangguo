@@ -71,3 +71,17 @@ desktop/                       # Windows Electron + React
 ## 说明
 
 本应用只访问你主动打开的 PikPak 分享，不登录账号。请遵守分享方与 PikPak 的使用条款，仅下载你有权获取的内容。
+
+## Electron 流式播放与打包
+
+视频卡片上的播放按钮可边缓冲边看，暂停播放后仍会继续缓冲；关闭播放器停止缓冲。缓冲文件写入所选下载目录，名称为 `视频名.播放缓冲-编号.part.mp4`，完整接收后去掉 `.part`。总时长与已缓冲时间分开显示。
+
+实时转换 MPEG-TS/HEVC 视频需要 FFmpeg。开发运行可使用 `~/.local/bin/ffmpeg`、`/opt/homebrew/bin/ffmpeg` 或 `/usr/local/bin/ffmpeg`。macOS 打包前，把适用于目标架构、可独立运行的 FFmpeg 可执行文件放到 `desktop/build/ffmpeg`，并赋予执行权限；打包工具会将其复制进应用。该二进制文件不纳入 Git。
+
+```bash
+cd desktop
+npm ci
+npm run dev
+# 准备好 build/ffmpeg 后生成 macOS 安装包
+npm run dist
+```

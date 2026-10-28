@@ -5,10 +5,51 @@
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
+  "author": "黄果下载",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "preview": "electron-vite preview"
+    "preview": "electron-vite preview",
+    "dist": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:dir": "npm run build && electron-builder --mac --dir"
+  },
+  "build": {
+    "appId": "com.huangguo.desktop",
+    "productName": "黄果下载",
+    "executableName": "Huangguo",
+    "asar": true,
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*"
+    ],
+    "mac": {
+      "identity": null,
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "黄果下载"
+    },
+    "extraResources": [
+      {
+        "from": "build/ffmpeg",
+        "to": "ffmpeg"
+      }
+    ]
   },
   "dependencies": {
     "lucide-react": "^0.544.0",
@@ -22,6 +63,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^5.0.2",
     "electron": "^37.3.1",
+    "electron-builder": "^26.18.0",
     "electron-vite": "^4.0.0",
     "tailwindcss": "^4.1.13",
     "typescript": "^5.9.2",

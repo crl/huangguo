@@ -3,6 +3,9 @@ import type { HuangguoAPI } from '../shared/api'
 import type { AppState } from '../shared/types'
 
 const api: HuangguoAPI = {
+  platform: process.platform,
+  locateDownload: (fileId) => ipcRenderer.invoke('download:locate', fileId),
+  openWatchPage: (fileId) => ipcRenderer.invoke('download:watch', fileId),
   getState: () => ipcRenderer.invoke('state:get'),
   onState: (callback) => {
     const listener = (_event: unknown, state: AppState): void => callback(state)
@@ -24,6 +27,7 @@ const api: HuangguoAPI = {
   selectAllVideos: () => ipcRenderer.invoke('share:selectVideos'),
   downloadSelected: () => ipcRenderer.invoke('share:download'),
   downloadItem: (id) => ipcRenderer.invoke('share:downloadItem', id),
+  playStream: (id) => ipcRenderer.invoke('share:play', id),
   chooseSaveDirectory: () => ipcRenderer.invoke('share:chooseDir'),
   dismissError: () => ipcRenderer.invoke('share:dismissError'),
   retry: (id) => ipcRenderer.invoke('download:retry', id),

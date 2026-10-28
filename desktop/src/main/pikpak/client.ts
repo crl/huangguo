@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { net } from 'electron'
-import { isFolder, type ShareItem } from '../../shared/types'
+import { isFolder, type ShareItem, type Breadcrumb } from '../../shared/types'
 import { sanitizeFileName } from '../../shared/format'
 import {
   allProfiles,
@@ -18,6 +18,7 @@ export class PikPakError extends Error {
 }
 
 export type PendingDownload = {
+  sourceBreadcrumbs?: Breadcrumb[]
   fileId: string
   fileName: string
   relativePath: string
@@ -38,6 +39,7 @@ export type OpenedShare = {
 type ShareMediaDTO = {
   link?: { url?: string }
   is_origin?: boolean
+  video?: { duration?: number | string }
   resolution_name?: string
 }
 
@@ -46,6 +48,7 @@ type ShareFileDTO = {
   kind?: string
   name?: string
   size?: string | number
+  params?: { duration?: string | number }
   thumbnail_link?: string
   web_content_link?: string
   medias?: ShareMediaDTO[]
@@ -252,24 +255,39 @@ export class PikPakShareClient {
     return items
   }
 
-  async collectFiles(folderId: string, pathPrefix: string): Promise<PendingDownload[]> {
+  async collectFiles(folderId: string, pathPrefix: string, breadcrumbs: Breadcrumb[] = []): Promise<PendingDownload[]> {
     const listing = await this.list(folderId)
     const result: PendingDownload[] = []
     for (const item of listing) {
       const safeName = sanitizeFileName(item.name)
       if (isFolder(item)) {
         const nestedPath = pathPrefix ? `${pathPrefix}/${safeName}` : safeName
-        result.push(...(await this.collectFiles(item.id, nestedPath)))
+        result.push(...(await this.collectFiles(item.id, nestedPath, [...breadcrumbs, { id: item.id, name: item.name }])))
       } else {
         result.push({
           fileId: item.id,
           fileName: safeName,
           relativePath: pathPrefix,
+          sourceBreadcrumbs: breadcrumbs,
           expectedSize: item.size
         })
       }
     }
     return result
+  }
+
+  async streamingURL(fileId: string): Promise<{ remote: string; duration: number }> {
+    const response = await this.getFileInfo(fileId)
+    const medias = response.file_info?.medias ?? []
+    const seconds = Number(response.file_info?.params?.duration)
+    const duration = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
+    const transcoded = medias.find((media) => !media.is_origin && media.link?.url)
+    if (transcoded?.link?.url) return { remote: transcoded.link.url, duration }
+    const origin = medias.find((media) => media.is_origin && media.link?.url)
+    if (origin?.link?.url) return { remote: origin.link.url, duration }
+    const fallback = response.file_info?.web_content_link || medias[0]?.link?.url
+    if (!fallback) throw new PikPakError('没有可播放的视频流')
+    return { remote: fallback, duration }
   }
 
   async downloadURL(fileId: string, preferTranscoding: boolean): Promise<string> {
@@ -290,6 +308,9 @@ export class PikPakShareClient {
       candidate = info?.links?.['application/octet-stream']?.url ?? ''
     }
     if (!candidate) {
+      if (medias.length === 0) {
+        throw new PikPakError('分享里的压缩包没有直链，PikPak 只给视频提供下载地址')
+      }
       throw new PikPakError('没有拿到下载地址')
     }
     return candidate

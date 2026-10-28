@@ -23,6 +23,25 @@ function highlightClass(focused: boolean, checked: boolean): string {
   return 'hover:bg-rose/8'
 }
 
+function StreamButton({ item, className }: { item: ShareItem; className: string }): JSX.Element | null {
+  if (!isVideo(item)) return null
+  return (
+    <button
+      type="button"
+      aria-label="边缓冲边看"
+      title="边缓冲边看"
+      className={`flex size-7 items-center justify-center rounded-md bg-black/55 text-white shadow-sm hover:bg-rose ${className}`}
+      onClick={(event) => {
+        event.stopPropagation()
+        void window.huangguo.playStream(item.id)
+      }}
+      onDoubleClick={(event) => event.stopPropagation()}
+    >
+      <Play className="size-3.5 fill-current" />
+    </button>
+  )
+}
+
 function ItemThumb({ item }: { item: ShareItem }): JSX.Element {
   const [failed, setFailed] = useState(false)
   const icon = iconFor(item)
@@ -52,6 +71,7 @@ export function ShareBrowser({ state }: { state: AppState }): JSX.Element {
   const currentId = state.breadcrumbs.at(-1)?.id ?? ''
   const scrollKey = `${currentId}:${state.viewMode}`
   const [query, setQuery] = useState(state.searchText)
+  const [thumbnailSize, setThumbnailSize] = useState(128)
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const scrollByFolder = useRef(new Map<string, number>())
@@ -59,9 +79,9 @@ export function ShareBrowser({ state }: { state: AppState }): JSX.Element {
   const ignoreScroll = useRef(false)
 
   useEffect(() => {
-    setQuery('')
+    setQuery(state.searchText)
     setFocusedId(focusedByFolder.current.get(currentId) ?? null)
-  }, [currentId])
+  }, [currentId, state.searchText])
 
   useLayoutEffect(() => {
     if (state.isLoading) return
@@ -135,7 +155,7 @@ export function ShareBrowser({ state }: { state: AppState }): JSX.Element {
           ))}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <label className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-hairline bg-canvas px-2 py-1.5">
             <Search className="size-3.5 text-muted" />
             <input
@@ -145,6 +165,23 @@ export function ShareBrowser({ state }: { state: AppState }): JSX.Element {
               onChange={(event) => setSearch(event.target.value)}
             />
           </label>
+          {isIcons && (
+            <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted">
+              <Image className="size-3.5" aria-hidden="true" />
+              <input
+                type="range"
+                min={96}
+                max={448}
+                step={8}
+                value={thumbnailSize}
+                aria-label="缩略图大小"
+                aria-valuetext={`${thumbnailSize} 像素`}
+                title="缩略图大小"
+                className="w-24 cursor-pointer accent-rose"
+                onChange={(event) => setThumbnailSize(Number(event.target.value))}
+              />
+            </label>
+          )}
           <div className="flex shrink-0 overflow-hidden rounded-lg border border-hairline">
             <button
               type="button"
@@ -193,16 +230,18 @@ export function ShareBrowser({ state }: { state: AppState }): JSX.Element {
         />
       ) : (
         <div
-          key={scrollKey}
           ref={listRef}
           className={`min-h-0 flex-1 overflow-auto ${isIcons ? 'p-2' : 'px-1.5 py-1'}`}
           onScroll={(event) => {
-            if (ignoreScroll.current || query.trim()) return
+            if (state.isLoading || ignoreScroll.current || query.trim()) return
             scrollByFolder.current.set(scrollKey, event.currentTarget.scrollTop)
           }}
         >
           {isIcons ? (
-            <ul className="grid grid-cols-[repeat(auto-fill,minmax(128px,1fr))] gap-1.5">
+            <ul
+              className="grid gap-1.5"
+              style={{ gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${thumbnailSize}px), 1fr))` }}
+            >
               {filtered.map((item) => {
                 const checked = selected.has(item.id)
                 const focused = focusedId === item.id
@@ -215,6 +254,7 @@ export function ShareBrowser({ state }: { state: AppState }): JSX.Element {
                     >
                       <div className="relative aspect-video overflow-hidden rounded-md bg-rose/8">
                         <ItemThumb key={item.id} item={item} />
+                        <StreamButton item={item} className="absolute right-1.5 top-1/2 z-10 -translate-y-1/2" />
                         <button
                           type="button"
                           className="absolute left-1 top-1 rounded-full bg-panel/80"
@@ -269,6 +309,7 @@ export function ShareBrowser({ state }: { state: AppState }): JSX.Element {
                         <p className="truncate text-sm">{item.name}</p>
                         <p className="text-xs text-muted">{isFolder(item) ? '文件夹' : formatBytes(item.size)}</p>
                       </div>
+                      <StreamButton item={item} className="shrink-0" />
                       {isFolder(item) && <ChevronRight className="size-3.5 text-muted/50" />}
                     </div>
                   </li>

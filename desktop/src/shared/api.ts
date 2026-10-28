@@ -1,6 +1,9 @@
 import type { AppState, ViewMode } from './types'
 
 export type HuangguoAPI = {
+  platform: string
+  locateDownload: (fileId: string) => Promise<void>
+  openWatchPage: (fileId: string) => Promise<void>
   getState: () => Promise<AppState | null>
   onState: (callback: (state: AppState) => void) => () => void
   setShareURL: (value: string) => Promise<void>
@@ -16,6 +19,7 @@ export type HuangguoAPI = {
   selectAllVideos: () => Promise<void>
   downloadSelected: () => Promise<void>
   downloadItem: (id: string) => Promise<void>
+  playStream: (id: string) => Promise<void>
   chooseSaveDirectory: () => Promise<void>
   dismissError: () => Promise<void>
   retry: (id: string) => Promise<void>
