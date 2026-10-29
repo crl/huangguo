@@ -1,6 +1,6 @@
 import { BrowserWindow, net, protocol, app } from 'electron'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { createReadStream, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { mkdir, open, rename } from 'node:fs/promises'
 import { sanitizeFileName } from '../shared/format'
@@ -25,6 +25,8 @@ type Resolver = (fileId: string) => Promise<ResolvedStream>
 const cache = new Map<string, ResolvedStream>()
 const inflight = new Map<string, Promise<ResolvedStream>>()
 const windows = new Map<string, BrowserWindow>()
+const bufferedSeconds = new Map<string, number>()
+const localBuffers = new Map<string, { path: string; written: number; done: boolean; contentType: string }>()
 const playbackControllers = new Map<string, AbortController>()
 
 let resolver: Resolver | null = null
@@ -115,6 +117,8 @@ function playerPage(fileId: string): string {
     const msg = document.getElementById('msg')
     const timeline = document.getElementById('timeline')
     let totalDuration = 0
+    let diskBuffered = 0
+    let diskBytes = 0
     const clock = (seconds) => {
       if (!Number.isFinite(seconds) || seconds < 0) return '--:--'
       const n = Math.floor(seconds)
@@ -122,12 +126,24 @@ function playerPage(fileId: string): string {
     }
     const updateTimeline = () => {
       const buffered = video.buffered.length ? video.buffered.end(video.buffered.length - 1) : 0
-      timeline.textContent = clock(video.currentTime) + ' / ' + (totalDuration > 0 ? clock(totalDuration) : '总时长未知') + '　已缓冲到 ' + clock(buffered)
+      timeline.textContent = clock(video.currentTime) + ' / ' + (totalDuration > 0 ? clock(totalDuration) : '总时长未知') + '　后台已缓冲到 ' + clock(diskBuffered) + (diskBytes ? '（' + (diskBytes / 1048576).toFixed(1) + ' MB）' : '')
     }
-    fetch('/info' + location.search).then(r => r.json()).then(info => {
-      totalDuration = info.duration || 0
-      updateTimeline()
-    }).catch(updateTimeline)
+    let infoPending = false
+    const refreshInfo = async () => {
+      if (infoPending) return
+      infoPending = true
+      try {
+        const info = await fetch('/info' + location.search).then(r => r.json())
+        totalDuration = info.duration || 0
+        diskBuffered = info.bufferedSeconds || 0
+        diskBytes = info.bytes || 0
+        updateTimeline()
+      } catch { updateTimeline() }
+      finally { infoPending = false }
+    }
+    refreshInfo()
+    const infoTimer = setInterval(refreshInfo, 1000)
+    window.addEventListener('pagehide', () => clearInterval(infoTimer))
     for (const event of ['timeupdate', 'progress', 'loadedmetadata', 'durationchange']) video.addEventListener(event, updateTimeline)
 
     video.addEventListener('playing', () => { msg.style.display = 'none' })
@@ -185,13 +201,15 @@ function mediaHeaders(response: Response, contentType: string): Headers {
 // Each response owns a separate file: seek requests and concurrent playback never overwrite downloads.
 async function saveBuffer(
   body: ReadableStream<Uint8Array>, stream: ResolvedStream,
-  extension: string, complete: boolean, finished?: Promise<boolean>
+  extension: string, complete: boolean, finished?: Promise<boolean>, fileId?: string
 ): Promise<ReadableStream<Uint8Array>> {
   await mkdir(stream.saveDirectory, { recursive: true })
   const stem = sanitizeFileName(stream.fileName).replace(/\.[^.]+$/, '')
   const destination = join(stream.saveDirectory, `${stem}.播放缓冲-${randomUUID().slice(0, 8)}.${extension}`)
   const partial = `${destination.slice(0, -(extension.length + 1))}.part.${extension}`
   const file = await open(partial, 'wx')
+  const saved = { path: partial, written: 0, done: false, contentType: extension === 'mp4' ? 'video/mp4' : stream.contentType }
+  if (fileId) localBuffers.set(fileId, saved)
   const reader = body.getReader()
   const playbackFile = await open(partial, 'r')
   let written = 0
@@ -213,15 +231,20 @@ async function saveBuffer(
           offset += result.bytesWritten
         }
         written += next.value.length
+        saved.written = written
         notify()
       }
-      if (complete && (!finished || await finished)) await rename(partial, destination)
+      if (complete && (!finished || await finished)) {
+        await rename(partial, destination)
+        saved.path = destination
+      }
     } catch (error) {
       failure = error
       await reader.cancel().catch(() => undefined)
     } finally {
       await file.close()
       done = true
+      saved.done = true
       notify()
     }
   })()
@@ -257,6 +280,20 @@ async function saveBuffer(
 }
 
 async function fetchMedia(fileId: string, request: Request, refresh = false): Promise<Response> {
+  const local = localBuffers.get(fileId)
+  const range = request.headers.get('range')?.match(/^bytes=(\d+)-(\d*)$/)
+  if (local && range && local.written > 0) {
+    const start = Number(range[1])
+    const end = Math.min(range[2] ? Number(range[2]) : local.written - 1, local.written - 1)
+    const total = local.done ? String(local.written) : '*'
+    if (start > end) return new Response(null, { status: 416, headers: { 'content-range': `bytes */${total}` } })
+    const input = request.method === 'HEAD' ? null : createReadStream(local.path, { start, end })
+    return new Response(input ? Readable.toWeb(input) as ReadableStream<Uint8Array> : null, {
+      status: 206,
+      headers: { 'content-type': local.contentType, 'accept-ranges': 'bytes',
+        'content-length': String(end - start + 1), 'content-range': `bytes ${start}-${end}/${total}` }
+    })
+  }
   const stream = await resolveStream(fileId, refresh)
   const signal = playbackControllers.get(fileId)?.signal ?? request.signal
   const response = await net.fetch(stream.remote, {
@@ -301,13 +338,29 @@ async function fetchMedia(fileId: string, request: Request, refresh = false): Pr
       ].find(existsSync)
       if (!binary) throw new PikPakError('缺少视频转换工具 FFmpeg')
       const converter = spawn(binary, [
-        '-hide_banner', '-loglevel', 'error', '-i', 'pipe:0',
+        '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:3', '-stats_period', '1',
+        '-fflags', '+genpts+discardcorrupt', '-i', 'pipe:0',
         '-map', '0:v:0', '-map', '0:a:0?',
         '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
-        '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+        '-pix_fmt', 'yuv420p', '-g', '48',
+        '-af', 'aresample=async=1:first_pts=0',
+        '-c:a', 'aac', '-profile:a', 'aac_low', '-ar', '48000', '-ac', '2', '-b:a', '128k',
+        '-avoid_negative_ts', 'make_zero',
         '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-        '-f', 'mp4', 'pipe:1'
-      ], { stdio: ['pipe', 'pipe', 'pipe'] })
+        '-frag_duration', '1000000', '-f', 'mp4', 'pipe:1'
+      ], { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] })
+      let progressText = ''
+      converter.stdio[3]?.on('data', (chunk: Buffer) => {
+        progressText += chunk.toString()
+        const lines = progressText.split('\n')
+        progressText = lines.pop() ?? ''
+        for (const line of lines) {
+          if (line.startsWith('out_time_us=')) {
+            const seconds = Number(line.slice(12)) / 1000000
+            if (Number.isFinite(seconds) && seconds >= 0) bufferedSeconds.set(fileId, seconds)
+          }
+        }
+      })
       const converted = new Promise<boolean>((resolve) => {
         converter.once('close', (code) => resolve(code === 0))
         converter.once('error', () => resolve(false))
@@ -317,7 +370,7 @@ async function fetchMedia(fileId: string, request: Request, refresh = false): Pr
       signal.addEventListener('abort', stop, { once: true })
       converter.once('close', () => signal.removeEventListener('abort', stop))
       void pipeline(Readable.fromWeb(full.body as never), converter.stdin).catch(() => converter.kill())
-      return new Response(await saveBuffer(Readable.toWeb(converter.stdout) as ReadableStream<Uint8Array>, stream, 'mp4', true, converted), {
+      return new Response(await saveBuffer(Readable.toWeb(converter.stdout) as ReadableStream<Uint8Array>, stream, 'mp4', true, converted, fileId), {
         headers: { 'content-type': 'video/mp4', 'cache-control': 'no-store' }
       })
     }
@@ -345,8 +398,10 @@ async function handleStream(request: Request): Promise<Response> {
   }
   if (url.pathname === '/info') {
     try {
-      const stream = await resolveStream(url.searchParams.get('file') ?? '')
-      return Response.json({ duration: stream.duration })
+      const fileId = url.searchParams.get('file') ?? ''
+      const stream = await resolveStream(fileId)
+      const local = localBuffers.get(fileId)
+      return Response.json({ duration: stream.duration, bufferedSeconds: bufferedSeconds.get(fileId) ?? 0, bytes: local?.written ?? 0 })
     } catch {
       return Response.json({ duration: 0 })
     }
@@ -396,6 +451,8 @@ export function openStreamPlayer(fileId: string, title: string): void {
     playbackControllers.delete(fileId)
     if (windows.get(fileId) === player) windows.delete(fileId)
     cache.delete(fileId)
+    localBuffers.delete(fileId)
+    bufferedSeconds.delete(fileId)
   })
   void player.loadURL(`${playerOrigin}/page?token=${accessToken}&file=${encodeURIComponent(fileId)}`)
   player.setTitle(title)
