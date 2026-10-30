@@ -158,6 +158,12 @@ function playerPage(fileId: string): string {
     let totalDuration = 0
     let diskBuffered = 0
     let diskBytes = 0
+    const playbackBuffered = () => {
+      for (let i = 0; i < video.buffered.length; i++) {
+        if (video.buffered.start(i) <= 0.1) return video.buffered.end(i)
+      }
+      return 0
+    }
     const clock = (seconds) => {
       if (!Number.isFinite(seconds) || seconds < 0) return '--:--'
       const n = Math.floor(seconds)
@@ -168,16 +174,16 @@ function playerPage(fileId: string): string {
       return Math.max(totalDuration, diskBuffered, mediaDuration)
     }
     const updateTimeline = () => {
-      const buffered = video.buffered.length ? video.buffered.end(video.buffered.length - 1) : 0
+      const buffered = diskBytes > 0 ? diskBuffered : playbackBuffered()
       const duration = progressDuration()
-      bufferFill.style.width = Number.isFinite(duration) && duration > 0 ? Math.min(100, Math.max(0, diskBuffered / duration * 100)) + '%' : '0%'
+      bufferFill.style.width = Number.isFinite(duration) && duration > 0 ? Math.min(100, Math.max(0, buffered / duration * 100)) + '%' : '0%'
       const displayTime = pendingTarget === null ? video.currentTime : pendingTarget
       const fraction = Number.isFinite(duration) && duration > 0 ? Math.min(1, Math.max(0, displayTime / duration)) : 0
       playedFill.style.width = (seeking ? Number(seek.value) / 10 : fraction * 100) + '%'
       seek.disabled = !(Number.isFinite(duration) && duration > 0)
       if (!seeking) seek.value = String(Math.round(fraction * 1000))
-      timeline.textContent = '后台已缓冲到 ' + clock(diskBuffered) + (diskBytes ? '（' + (diskBytes / 1048576).toFixed(1) + ' MB）' : '')
-      const knownTotal = totalDuration > 0 && totalDuration >= diskBuffered ? clock(totalDuration) : '总时长未知'
+      timeline.textContent = (diskBytes > 0 ? '后台已缓冲到 ' : '已缓冲到 ') + clock(buffered) + (diskBytes ? '（' + (diskBytes / 1048576).toFixed(1) + ' MB）' : '')
+      const knownTotal = totalDuration > 0 && totalDuration >= buffered ? clock(totalDuration) : (diskBytes === 0 && Number.isFinite(video.duration) && video.duration > 0 ? clock(video.duration) : clock(duration))
       document.getElementById('clock').textContent = clock(displayTime) + ' / ' + knownTotal
     }
     seek.addEventListener('input', () => { seeking = true; playedFill.style.width = (Number(seek.value) / 10) + '%' })
