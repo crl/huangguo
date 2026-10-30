@@ -104,18 +104,57 @@ function playerPage(fileId: string): string {
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #14080c; color: #ffd6e0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
     video { width: 100%; height: 100%; background: #000; }
-    #timeline { position: absolute; left: 16px; bottom: 62px; background: #000b; border-radius: 6px; padding: 6px 10px; font-size: 13px; pointer-events: none; }
+    #controls { position: absolute; bottom: 0; left: 0; right: 0; padding: 10px 16px 14px; background: linear-gradient(transparent, #000e); }
+    #timeline { color: white; font-size: 13px; margin-left: auto; text-align: right; white-space: nowrap; }
+    #buffer-track { position: relative; height: 18px; display: flex; align-items: center; }
+    #buffer-track::before { content: ''; position: absolute; width: 100%; height: 6px; background: #ffffff45; border-radius: 4px; }
+    #buffer-fill, #played-fill { position: absolute; height: 6px; width: 0; border-radius: 4px; pointer-events: none; }
+    #buffer-fill { background: #ffffff80; }
+    #played-fill { background: #ff789e; }
+    #seek { position: relative; width: 100%; height: 18px; margin: 0; appearance: none; background: transparent; cursor: pointer; }
+    #seek::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; }
+    #seek:disabled { cursor: default; opacity: .5; }
+    #buttons { display: flex; align-items: center; gap: 12px; margin-top: 4px; color: white; }
+    #buttons button { display: grid; place-items: center; width: 32px; height: 32px; background: transparent; border: 0; color: white; cursor: pointer; padding: 4px; }
+    #buttons button:hover { color: #ffd6e0; }
+    #buttons svg { width: 20px; height: 20px; fill: currentColor; }
+    #volume-wrap { position: relative; display: flex; align-items: center; }
+    #volume { width: 72px; accent-color: white; }
+    #volume[hidden] { display: none; }
+    #fullscreen { flex-shrink: 0; }
     #msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; font-size: 14px; }
   </style>
 </head>
 <body>
-  <video id="v" controls autoplay playsinline src="${src}"></video>
-  <div id="timeline" role="status">正在获取总时长…</div>
+  <video id="v" autoplay playsinline src="${src}"></video>
+  <div id="controls">
+  <div id="buttons"><button id="play" type="button" aria-label="播放"></button><span id="clock">00:00 / --:--</span><div id="volume-wrap"><button id="mute" type="button" aria-label="调节音量" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 4V5L7 9H3zm12-1v8c1.8-.6 3-2.2 3-4s-1.2-3.4-3-4zm0-4v2c2.9.8 5 3.2 5 6s-2.1 5.2-5 6v2c4-1 7-4.2 7-8s-3-7-7-8z"/></svg></button><input id="volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="音量" hidden></div><span id="timeline" role="status">正在获取缓冲信息…</span><button id="fullscreen" type="button" aria-label="全屏"><svg viewBox="0 0 24 24"><path d="M4 4h6v2H6v4H4zm10 0h6v6h-2V6h-4zM4 14h2v4h4v2H4zm14 0h2v6h-6v-2h4z"/></svg></button></div>
+  <div id="buffer-track"><div id="buffer-fill"></div><div id="played-fill"></div><input id="seek" type="range" min="0" max="1000" value="0" aria-label="播放进度" disabled></div>
+  </div>
   <div id="msg">正在缓冲…</div>
   <script>
     const video = document.getElementById('v')
     const msg = document.getElementById('msg')
     const timeline = document.getElementById('timeline')
+    const bufferFill = document.getElementById('buffer-fill')
+    const playedFill = document.getElementById('played-fill')
+    const seek = document.getElementById('seek')
+    const play = document.getElementById('play')
+    const mute = document.getElementById('mute')
+    const volume = document.getElementById('volume')
+    play.addEventListener('click', () => { if (video.paused) void video.play().catch(() => {}); else video.pause() })
+    video.addEventListener('click', () => { if (video.paused) void video.play().catch(() => {}); else video.pause() })
+    const updatePlay = () => { play.setAttribute('aria-label', video.paused ? '播放' : '暂停'); play.innerHTML = video.paused ? '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>' : '<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>' }
+    updatePlay()
+    video.addEventListener('play', updatePlay)
+    video.addEventListener('pause', updatePlay)
+    mute.addEventListener('click', () => { volume.hidden = !volume.hidden; mute.setAttribute('aria-expanded', String(!volume.hidden)) })
+    volume.addEventListener('input', () => { video.volume = Number(volume.value); video.muted = false; mute.style.opacity = video.volume === 0 ? '0.45' : '1' })
+    document.addEventListener('click', (event) => { if (!document.getElementById('volume-wrap').contains(event.target)) { volume.hidden = true; mute.setAttribute('aria-expanded', 'false') } })
+    document.getElementById('fullscreen').addEventListener('click', () => { if (document.fullscreenElement) void document.exitFullscreen(); else void document.documentElement.requestFullscreen() })
+    let seeking = false
+    let pendingTarget = null
+    let seekGeneration = 0
     let totalDuration = 0
     let diskBuffered = 0
     let diskBytes = 0
@@ -124,10 +163,46 @@ function playerPage(fileId: string): string {
       const n = Math.floor(seconds)
       return (n >= 3600 ? Math.floor(n / 3600) + ':' : '') + String(Math.floor(n / 60) % 60).padStart(2, '0') + ':' + String(n % 60).padStart(2, '0')
     }
+    const progressDuration = () => {
+      const mediaDuration = Number.isFinite(video.duration) ? video.duration : 0
+      return Math.max(totalDuration, diskBuffered, mediaDuration)
+    }
     const updateTimeline = () => {
       const buffered = video.buffered.length ? video.buffered.end(video.buffered.length - 1) : 0
-      timeline.textContent = clock(video.currentTime) + ' / ' + (totalDuration > 0 ? clock(totalDuration) : '总时长未知') + '　后台已缓冲到 ' + clock(diskBuffered) + (diskBytes ? '（' + (diskBytes / 1048576).toFixed(1) + ' MB）' : '')
+      const duration = progressDuration()
+      bufferFill.style.width = Number.isFinite(duration) && duration > 0 ? Math.min(100, Math.max(0, diskBuffered / duration * 100)) + '%' : '0%'
+      const displayTime = pendingTarget === null ? video.currentTime : pendingTarget
+      const fraction = Number.isFinite(duration) && duration > 0 ? Math.min(1, Math.max(0, displayTime / duration)) : 0
+      playedFill.style.width = (seeking ? Number(seek.value) / 10 : fraction * 100) + '%'
+      seek.disabled = !(Number.isFinite(duration) && duration > 0)
+      if (!seeking) seek.value = String(Math.round(fraction * 1000))
+      timeline.textContent = '后台已缓冲到 ' + clock(diskBuffered) + (diskBytes ? '（' + (diskBytes / 1048576).toFixed(1) + ' MB）' : '')
+      const knownTotal = totalDuration > 0 && totalDuration >= diskBuffered ? clock(totalDuration) : '总时长未知'
+      document.getElementById('clock').textContent = clock(displayTime) + ' / ' + knownTotal
     }
+    seek.addEventListener('input', () => { seeking = true; playedFill.style.width = (Number(seek.value) / 10) + '%' })
+    seek.addEventListener('change', () => {
+      const duration = progressDuration()
+      if (Number.isFinite(duration) && duration > 0) {
+        const target = Number(seek.value) / 1000 * duration
+        const generation = ++seekGeneration
+        pendingTarget = target
+        if (diskBytes > 0 && target <= diskBuffered) {
+          const resume = !video.paused
+          video.addEventListener('loadedmetadata', () => {
+            if (generation !== seekGeneration) return
+            video.currentTime = target
+            if (resume) void video.play().catch(() => {})
+          }, { once: true })
+          video.src = '/buffer' + location.search + '&snapshot=' + diskBytes
+          video.load()
+        } else video.currentTime = target
+      }
+      seeking = false
+      updateTimeline()
+    })
+    video.addEventListener('seeked', () => { pendingTarget = null; updateTimeline() })
+    video.addEventListener('error', () => { pendingTarget = null; updateTimeline() })
     let infoPending = false
     const refreshInfo = async () => {
       if (infoPending) return
@@ -282,10 +357,10 @@ async function saveBuffer(
 async function fetchMedia(fileId: string, request: Request, refresh = false): Promise<Response> {
   const local = localBuffers.get(fileId)
   const range = request.headers.get('range')?.match(/^bytes=(\d+)-(\d*)$/)
-  if (local && range && local.written > 0) {
+  if (local && local.done && range && local.written > 0 && !local.path.includes('.part.')) {
     const start = Number(range[1])
     const end = Math.min(range[2] ? Number(range[2]) : local.written - 1, local.written - 1)
-    const total = local.done ? String(local.written) : '*'
+    const total = String(local.written)
     if (start > end) return new Response(null, { status: 416, headers: { 'content-range': `bytes */${total}` } })
     const input = request.method === 'HEAD' ? null : createReadStream(local.path, { start, end })
     return new Response(input ? Readable.toWeb(input) as ReadableStream<Uint8Array> : null, {
@@ -301,6 +376,7 @@ async function fetchMedia(fileId: string, request: Request, refresh = false): Pr
     headers: forwardHeaders(request, stream.userAgent),
     signal
   })
+  console.info('播放器上游响应', { status: response.status, range: request.headers.get('range'), contentType: response.headers.get('content-type'), contentRange: response.headers.get('content-range') })
   if (!refresh && (response.status === 401 || response.status === 403)) {
     await response.body?.cancel().catch(() => undefined)
     return fetchMedia(fileId, request, true)
@@ -314,6 +390,7 @@ async function fetchMedia(fileId: string, request: Request, refresh = false): Pr
     const first = await reader.read()
     const bytes = first.value
     const transportStream = bytes && bytes[0] === 0x47 && (bytes.length < 189 || bytes[188] === 0x47)
+    console.info('播放器数据头', { signature: bytes ? Buffer.from(bytes.subarray(0, 16)).toString('hex') : 'empty', transportStream: Boolean(transportStream) })
     const body = new ReadableStream<Uint8Array>({
       start(controller) { if (bytes) controller.enqueue(bytes) },
       async pull(controller) {
@@ -332,12 +409,11 @@ async function fetchMedia(fileId: string, request: Request, refresh = false): Pr
       })
       if (!full.ok || !full.body) throw new PikPakError(`视频服务器返回 HTTP ${full.status}`)
       const binary = [
-        join(process.resourcesPath, 'ffmpeg'),
-        join(app.getAppPath(), 'build', 'ffmpeg'),
+        join(process.resourcesPath, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'),
+        join(app.getAppPath(), 'build', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'),
         join(homedir(), '.local/bin/ffmpeg'), '/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg'
       ].find(existsSync)
-      if (!binary) throw new PikPakError('缺少视频转换工具 FFmpeg')
-      const converter = spawn(binary, [
+      const converter = spawn(binary ?? 'ffmpeg', [
         '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:3', '-stats_period', '1',
         '-fflags', '+genpts+discardcorrupt', '-i', 'pipe:0',
         '-map', '0:v:0', '-map', '0:a:0?',
@@ -405,6 +481,19 @@ async function handleStream(request: Request): Promise<Response> {
     } catch {
       return Response.json({ duration: 0 })
     }
+  }
+  if (url.pathname === '/buffer') {
+    const local = localBuffers.get(url.searchParams.get('file') ?? '')
+    const requestedSize = Number(url.searchParams.get('snapshot'))
+    if (!local || !Number.isSafeInteger(requestedSize) || requestedSize <= 0 || requestedSize > local.written) return new Response('缓冲尚未就绪', { status: 404 })
+    const match = request.headers.get('range')?.match(/^bytes=(\d+)-(\d*)$/)
+    const start = match ? Number(match[1]) : 0
+    const end = Math.min(match?.[2] ? Number(match[2]) : requestedSize - 1, requestedSize - 1)
+    if (start > end) return new Response(null, { status: 416, headers: { 'content-range': `bytes */${requestedSize}` } })
+    const headers: Record<string, string> = { 'content-type': local.contentType, 'accept-ranges': 'bytes', 'content-length': String(end - start + 1), 'cache-control': 'no-store' }
+    if (match) headers['content-range'] = `bytes ${start}-${end}/${requestedSize}`
+    const input = request.method === 'HEAD' ? null : createReadStream(local.path, { start, end })
+    return new Response(input ? Readable.toWeb(input) as ReadableStream<Uint8Array> : null, { status: match ? 206 : 200, headers })
   }
   if (url.pathname === '/media') {
     const fileId = url.searchParams.get('file') ?? ''
